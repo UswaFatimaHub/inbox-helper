@@ -1,0 +1,13 @@
+.env
+.venv/
+.cache/
+out/
+__pycache__/
+.pytest_cache/
+
+# Day logs: personal reference notes, written up by hand at the end
+docs/log/
+.data/
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
