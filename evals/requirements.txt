@@ -1,0 +1,3 @@
+# Eval-only dependencies, installed into evals/.venv so the app's .venv is untouched.
+-r ../requirements.txt
+deepeval==4.3.1
