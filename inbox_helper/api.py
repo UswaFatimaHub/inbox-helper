@@ -21,9 +21,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from .config import (ALL_INTENTS, CACHE_PATH, CODE_FLAGS, DEFAULT_LANES, DEFAULT_POLICY, DEFAULT_PROFILE, FLAGS,
-                     PROMPT_VERSION, ROOT, SYSTEM_INTENTS, load_api_keys)
+                     PROMPT_VERSION, QUARANTINE_KEEP_FLAGS, ROOT, SYSTEM_INTENTS, load_api_keys)
 from .db import BlockedSender, Database, Item, ReviewEvent, Run, iso, utcnow
 from .loader import InputError, LoadResult, Message, load_messages
+from .checks import detect_injection
 from .pipeline import PRIORITY_FLAGS, Cache, Lane, Result, TriageRun, build_lanes
 
 SAMPLE_INPUT = ROOT / "data" / "messages.csv"
@@ -46,6 +47,43 @@ class ReviewAction(BaseModel):
     note: str | None = None   # reason for rejecting, optional
 
 
+def requarantine_pending(db: Database) -> int:
+    """Apply the current quarantine rules to pending items stored by older code.
+
+    Triage rules run when a message is processed, so items from runs made before a rule existed would otherwise keep
+    an approvable draft. The discarded draft is kept in the audit trail. Returns the number of items changed.
+    """
+    changed = 0
+    with db.write_lock, db.Session() as s:
+        pending = s.scalars(select(Item).where(Item.review_status == "pending",
+                                               Item.intent.not_in(list(SYSTEM_INTENTS)))).all()
+        for it in pending:
+            pattern = detect_injection(f"{it.subject}\n{it.body}")
+            if not (pattern or "prompt_injection" in it.flags):
+                continue
+            s.add(ReviewEvent(item=it, action="quarantined", reviewer="system",
+                              before_text=it.final_reply if it.final_reply is not None else it.draft_reply,
+                              note=f"Re-checked with current rules: manipulation attempt, draft discarded "
+                                   f"(AI had labelled it {it.intent})"))
+            it.intent, it.secondary_intent = "manipulation_attempt", None
+            it.flags = sorted({f for f in it.flags if f in QUARANTINE_KEEP_FLAGS}
+                              | {"prompt_injection", *(["injection_pattern"] if pattern else [])})
+            it.draft_reply, it.final_reply, it.priority_review = "", None, True
+            it.reason = ("Matches a known prompt-injection phrase." if pattern
+                         else "The model flagged this message as prompt injection.")
+            changed += 1
+        # tidy items quarantined by an earlier version of these rules, which kept the AI's label and draft flags
+        stale = s.scalars(select(Item).where(Item.review_status == "pending",
+                                             Item.intent == "manipulation_attempt")).all()
+        for it in stale:
+            kept = sorted(f for f in it.flags if f in QUARANTINE_KEEP_FLAGS)
+            if it.secondary_intent or kept != sorted(it.flags):
+                it.secondary_intent, it.flags = None, kept
+                changed += 1
+        s.commit()
+    return changed
+
+
 def default_lanes() -> list[Lane]:
     return build_lanes(DEFAULT_LANES, load_api_keys(), print)
 
@@ -53,6 +91,8 @@ def default_lanes() -> list[Lane]:
 def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane]] = default_lanes,
                use_cache: bool = True) -> FastAPI:
     db = db or Database()
+    if n := requarantine_pending(db):
+        print(f"Quarantined {n} pending item(s) from older runs under the current rules")
     policy = DEFAULT_POLICY.read_text(encoding="utf-8")
     app = FastAPI(title="Inbox Helper", description="Triage candidate messages; a human reviews every draft.")
 

@@ -19,6 +19,7 @@ const EVENT_TEXT: Record<string, string> = {
   regenerated: "asked the AI for a new draft",
   blocked: "blocked the sender",
   unblocked: "unblocked the sender",
+  quarantined: "quarantined this message and discarded the AI draft",
 };
 
 export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onBack, onPrev, onNext, notify }: {
@@ -142,8 +143,10 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
                 <IntentChip intent={item.secondary_intent} muted />
               </>
             )}
-            {item.lane === "rules" ? (
-              <span className="ml-auto text-xs text-slate-500">Matched by rule, not by the AI</span>
+            {item.lane === "rules" || item.intent === "manipulation_attempt" ? (
+              <span className="ml-auto text-xs text-slate-500">
+                {item.flags.includes("injection_pattern") ? "Matched by rule" : "Flagged by the AI"} · no reply drafted
+              </span>
             ) : (
             <div className="ml-auto flex items-center gap-2 text-xs text-slate-500" title="How sure the model was about the intent">
               Confidence
@@ -178,9 +181,11 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
             </header>
             <div className="space-y-4 px-5 py-4 text-sm text-slate-600">
               <p>
-                {item.flags.includes("injection_pattern")
+                {item.lane === "rules"
                   ? "This message contains a known prompt-injection phrase, so it was never sent to the AI."
-                  : "The AI model flagged this message as an attempt to instruct it, so its draft was discarded."}{" "}
+                  : item.flags.includes("injection_pattern")
+                    ? "This message contains a known prompt-injection phrase. It was triaged before that rule existed, so the AI's draft has been discarded."
+                    : "The AI model flagged this message as an attempt to instruct it, so its draft was discarded."}{" "}
                 Blocking the sender closes their open messages and skips everything they send in future: no AI call, no reply.
               </p>
               {senderBlocked ? (

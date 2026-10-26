@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .checks import ParseError, check_draft, detect_injection, normalize, parse_batch_response
-from .config import PRIORITY_INTENTS, PROMPT_VERSION, LaneConfig
+from .config import PRIORITY_INTENTS, PROMPT_VERSION, QUARANTINE_KEEP_FLAGS, LaneConfig
 from .loader import Message
 from .prompt import build_system_prompt, build_user_prompt
 from .providers import Completion, GeminiClient, OpenRouterClient, ProviderError, RateLimiter
@@ -273,8 +273,7 @@ class TriageRun:
         if "prompt_injection" in t.flags:  # the model spotted manipulation the patterns missed: quarantine, drop draft
             result = self._quarantined_result(
                 m, "manipulation_attempt", t.reason or "The model flagged this message as prompt injection.",
-                extra_flags=t.flags + t.code_flags, secondary=t.intent if t.intent != "other" else None,
-                confidence=t.confidence, lane=lane, model=model, latency=latency)
+                extra_flags=t.flags, confidence=t.confidence, lane=lane, model=model, latency=latency)
             self._store(result)
             return
         flags = set(t.flags + t.code_flags + m.warnings)
@@ -298,7 +297,7 @@ class TriageRun:
                             secondary: str | None = None, confidence: float = 1.0, lane: str = "rules",
                             model: str = "none", latency: float | None = None) -> Result:
         """No reply is drafted. Blocked senders are closed immediately; manipulation attempts wait for a reviewer."""
-        flags = {*extra_flags, *m.warnings}
+        flags = {f for f in extra_flags if f in QUARANTINE_KEEP_FLAGS} | set(m.warnings)
         if intent == "blocked_sender":
             flags.add("blocked_sender")
         else:

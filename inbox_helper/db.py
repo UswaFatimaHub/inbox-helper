@@ -97,7 +97,7 @@ class ReviewEvent(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
-    action: Mapped[str] = mapped_column(String(16))  # edited|approved|rejected|reopened|regenerated|blocked|unblocked
+    action: Mapped[str] = mapped_column(String(16))  # edited|approved|rejected|reopened|regenerated|blocked|unblocked|quarantined
     reviewer: Mapped[str] = mapped_column(String(80))
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     before_text: Mapped[str | None] = mapped_column(Text)

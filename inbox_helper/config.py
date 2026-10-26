@@ -56,9 +56,14 @@ CODE_FLAGS = {
     "invalid_email": "The sender email address looks malformed.",
     "duplicate_message": "Same text as an earlier message in this batch.",
     "processing_failed": "No model produced a usable result; needs a manual reply.",
-    "injection_pattern": "Text matches a known prompt-injection phrase; caught before any AI call.",
+    "injection_pattern": "Text matches a known prompt-injection phrase.",
     "blocked_sender": "Sender is on the blocklist.",
 }
+
+# Flags that stay meaningful on a quarantined message. Others (low_confidence, needs_info_not_available, ...)
+# describe the AI's reading of a request we refuse to answer, so they are dropped.
+QUARANTINE_KEEP_FLAGS = {"prompt_injection", "injection_pattern", "blocked_sender", "non_english", "hostile_tone",
+                         "sensitive", "invalid_email", "duplicate_message"}
 
 # Intents that always go to the top of the review queue regardless of flags.
 PRIORITY_INTENTS = {"accommodation_request", "complaint", "other", "manipulation_attempt"}

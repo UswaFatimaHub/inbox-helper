@@ -134,7 +134,7 @@ def test_injection_pattern_is_quarantined_without_a_model_call():
 def test_model_flagged_injection_drops_the_draft():
     item = {**good_item("M1"), "flags": ["prompt_injection"], "intent": "offer_and_compensation"}
     [r] = run([lane("a", lambda ids: [item])], n=1)
-    assert r.intent == "manipulation_attempt" and r.secondary_intent == "offer_and_compensation"
+    assert r.intent == "manipulation_attempt" and r.secondary_intent is None
     assert r.draft_reply == "" and "injection_pattern" not in r.flags
 
 

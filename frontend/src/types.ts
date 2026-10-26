@@ -1,7 +1,7 @@
 export type ReviewStatus = "pending" | "approved" | "rejected" | "blocked";
 
 export interface ReviewEvent {
-  action: "edited" | "approved" | "rejected" | "reopened" | "regenerated" | "blocked" | "unblocked";
+  action: "edited" | "approved" | "rejected" | "reopened" | "regenerated" | "blocked" | "unblocked" | "quarantined";
   reviewer: string;
   at: string;
   before_text: string | null;
