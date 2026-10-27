@@ -10,7 +10,7 @@ import queue
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
@@ -92,7 +92,7 @@ def build_lanes(configs: tuple[LaneConfig, ...], keys: dict[str, str], log: Call
 
 
 class Cache:
-    """JSON file of validated model outputs, keyed by prompt version + policy + message content."""
+    """JSON file of validated model outputs, keyed by the exact prompt text the model saw (see _cache_key)."""
 
     def __init__(self, path: Path | None):
         self.path = path
@@ -134,7 +134,7 @@ class TriageRun:
         self.lanes, self.policy, self.batch_size, self.max_attempts = lanes, policy, max(1, batch_size), max_attempts
         self.cache = cache or Cache(None)
         self.system = build_system_prompt(policy)
-        self._policy_hash = hashlib.sha256(policy.encode()).hexdigest()[:12]
+        self._system_hash = hashlib.sha256(self.system.encode()).hexdigest()
         self._t0 = time.monotonic()
         self._log = log
         self._on_result = on_result
@@ -175,7 +175,10 @@ class TriageRun:
                 self._results[m.message_id] = self._failed_result(
                     m, self._last_error.get(m.message_id, "no provider lane was available"))
                 self._emit(self._results[m.message_id])
-        self.cache.save()
+        try:
+            self.cache.save()
+        except OSError as e:  # results are already stored; a cache that cannot be written only costs calls later
+            self.log(f"could not save the cache: {e}")
         return [self._results[m.message_id] for m in messages]
 
     def log(self, msg: str) -> None:
@@ -265,7 +268,9 @@ class TriageRun:
 
     # ---- results ------------------------------------------------------------------------------------------
     def _cache_key(self, m: Message) -> str:
-        blob = json.dumps([PROMPT_VERSION, self._policy_hash, m.candidate_name, m.role, m.subject, m.body])
+        # Everything the model is shown for this message, so any edit to the prompt, taxonomy or policy misses the
+        # cache without anyone having to bump PROMPT_VERSION. The id is blanked: the same text under another id hits.
+        blob = json.dumps([self._system_hash, build_user_prompt([replace(m, message_id="")])])
         return hashlib.sha256(blob.encode()).hexdigest()
 
     def _record(self, m: Message, raw: dict, lane: str, model: str, latency: float | None) -> None:

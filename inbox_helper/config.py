@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_POLICY = ROOT / "policies" / "recruiting_policy.md"
 CACHE_PATH = ROOT / ".cache" / "triage_cache.json"
 
-# Bump whenever the prompt changes so cached results from an older prompt are not reused.
+# A label recorded on every draft and eval run; bump it when the prompt changes so results can be compared.
+# The cache does not depend on it: cache keys hash the prompt text itself (pipeline.TriageRun._cache_key).
 PROMPT_VERSION = "v3"  # v2: no claimed actions, team voice, acknowledge frustration, spam flag; v3: injection != spam
 
 INTENTS = {

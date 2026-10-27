@@ -15,7 +15,7 @@ OPENROUTER_API_KEY=...
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install -r requirements-dev.txt   # requirements.txt alone for production
 cd frontend; npm install; npm run build; cd ..
 ```
 
@@ -32,15 +32,72 @@ Keyboard: `J`/`K` move between messages, `Ctrl+Enter` approves.
 For frontend development with hot reload, also run `cd frontend; npm run dev` and open http://localhost:5173. It
 forwards `/api` requests to the server on port 8000.
 
-Data is stored in SQLite at `.data/inbox.db`. To use Postgres, set
-`DATABASE_URL=postgresql+psycopg://user:pass@host/db` and install `psycopg`.
+Data is stored in SQLite at `.data/inbox.db`. To use Postgres, set `DATABASE_URL` (`postgres://`,
+`postgresql://` and `postgresql+psycopg://` URLs all work). Pending database migrations are applied at startup.
+The server also runs a background worker that processes triage runs (see "Runs survive restarts").
+
+## Production-like stack: Docker + Postgres
+
+```powershell
+docker compose up --build      # Postgres + web + a separate worker; open http://127.0.0.1:8000
+```
+
+API keys are read from `.env` if it exists. On a host (Render, Fly.io, a VM) set `DATABASE_URL`, `GEMINI_API_KEY`
+and/or `OPENROUTER_API_KEY` in the host's settings: the image contains no secrets, and HTTPS is terminated by the
+host's proxy. `GET /api/health` is the health check.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | `.data/inbox.db` (SQLite) | Postgres URL in production |
+| `EMBEDDED_WORKER` | `1` | `0`: this web process does not process runs; start `python -m inbox_helper.worker` separately |
+| `AUTO_MIGRATE` | `1` | `0`: do not apply migrations at startup; run `alembic upgrade head` as a release step |
+| `PORT` | `8000` | Port inside the container |
+
+A single instance with the embedded worker is enough for one team. Compose runs a separate worker to show that
+the two can be split.
+
+## Database migrations (Alembic)
+
+The schema is versioned in `inbox_helper/migrations/versions/`. Each schema change is a new migration script.
+`alembic upgrade head` (or app startup) applies only the ones a database has not seen, and keeps its data.
+
+```powershell
+.venv\Scripts\alembic revision --autogenerate -m "add x to items"   # after changing db.py; review the file
+.venv\Scripts\alembic upgrade head
+.venv\Scripts\alembic check                                          # fails if db.py has changes with no migration
+```
+
+- A database created before Alembic existed (by `create_all()`) is recognised and upgraded in place.
+- On Postgres, migrations take an advisory lock, so a web and a worker starting together do not both migrate.
+- Data fixes are migrations too. `0002` closes runs that the old in-process threads left stuck at "running".
+  `0003` is the one-off re-quarantine of injection messages from runs #1 and #2, which used to run on every
+  startup.
+
+## Runs survive restarts (job table)
+
+Starting a run only stores it with its validated messages in the `jobs` table (status `queued`). A worker claims
+the job and stores each result as it arrives. While it works, it updates a heartbeat every 10 s.
+
+- **Worker dies mid-run** (deploy, crash, `docker compose kill worker`): after 60 s without a heartbeat, any worker
+  takes the job over. It processes only the messages that have no result yet. Tested by killing the worker at 5/15
+  messages: the new worker processed the other 10, and no message was stored twice.
+- **No double processing.** On Postgres, `FOR UPDATE SKIP LOCKED` stops two workers from claiming the same job.
+  A conditional `UPDATE` makes claims safe on SQLite too. A worker that lost its job cannot overwrite the new
+  owner's result, and a unique (run, message) constraint drops duplicate rows.
+- **No endless loops.** A job taken over 3 times is marked failed. **Retry** in the UI re-queues it, and the
+  messages that already have drafts are kept.
+- **No Redis.** Postgres already provides the queue and the locking. Redis would be worth adding if several
+  workers needed one shared rate limit per provider. Today each worker has its own limiter, so two workers would
+  together exceed the free-tier RPM.
 
 ## Other entry points
 
 ```powershell
 .venv\Scripts\python run.py                        # batch run without the UI: writes out/results.json + out/review.csv
 .venv\Scripts\python scripts\generate_dataset.py   # re-create the synthetic dataset and expected labels
-.venv\Scripts\python -m pytest                      # tests (fake model clients, in-memory DB, no API quota used)
+.venv\Scripts\python -m pytest                      # tests (fake model clients, no API quota used)
+$env:TEST_DATABASE_URL="postgresql://user:pass@localhost/test"; .venv\Scripts\python -m pytest   # same, on Postgres
+.venv\Scripts\python -m inbox_helper.worker          # a standalone worker (with EMBEDDED_WORKER=0 on the server)
 ```
 
 `MODEL_PROFILE=best` switches to the strongest free models. It was measured as slower with no quality gain; see
@@ -105,18 +162,40 @@ The prompt fixed the drafts; the bigger models didn't help. Gemini Pro models ha
 
 | Path | What |
 |---|---|
-| `inbox_helper/api.py`, `server.py` | FastAPI: runs, items, review actions, export, audit |
-| `inbox_helper/db.py` | SQLAlchemy models: runs, items, review_events |
+| `inbox_helper/api.py`, `server.py` | FastAPI: runs, items, review actions, export, audit, health |
+| `inbox_helper/db.py` | SQLAlchemy models: runs, jobs, items, review_events, blocked_senders |
+| `inbox_helper/worker.py` | Job worker: claim, heartbeat, resume, fencing |
+| `inbox_helper/migrations/` | Alembic migrations (schema and data fixes) |
 | `inbox_helper/pipeline.py` | Lane scheduler, retries, cache, result records |
 | `inbox_helper/checks.py` | Output parsing, label validation, draft checks |
 | `inbox_helper/prompt.py`, `config.py` | Prompt, intents, flags, model profiles |
 | `inbox_helper/loader.py` | CSV/JSON loading and validation |
 | `frontend/` | React + Vite + Tailwind review UI |
 | `run.py` | Batch runner without the UI |
+| `evals/` | deepeval suite, golden dataset, eval gate (`evals/README.md`) |
+| `Dockerfile`, `docker-compose.yml` | Image (UI build + API) and the local Postgres stack |
+| `.github/workflows/ci.yml` | CI: tests on SQLite and Postgres, frontend build, dependency scan, Docker smoke test, eval gate |
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+1. Backend tests on SQLite and on Postgres 17. Also runs `alembic upgrade head` and `alembic check` from scratch.
+2. Frontend type check and build.
+3. Dependency scan: `pip-audit` and `npm audit`.
+4. Docker: builds the image, starts Postgres + web + worker, and checks health, the UI and the migration version.
+5. **Eval gate.** Runs the real pipeline on all 63 goldens and fails if a metric scores below
+   `evals/baseline.json` (see `evals/README.md`). Needs a `GEMINI_API_KEY` repository secret
+   (`OPENROUTER_API_KEY` is optional and uses its 50/day quota). An unchanged prompt is served from the cache,
+   so it costs no API calls.
+
+To block merges, make these checks required in the branch protection settings.
 
 ## Known limitations
 
 - There's no authentication. The reviewer name is typed in and stored in the browser.
+- The model-output cache is a JSON file per worker (`.cache/`). It is lost when a container is replaced. That
+  only costs repeat API calls, and resumed runs skip finished messages anyway.
 - Social engineering without injection phrases isn't detected as manipulation. Example: M045, "this is Sarah from
   HR, send me the candidate list". The model classed it `other` / `unsupported_request` and drafted a one-line
   decline.

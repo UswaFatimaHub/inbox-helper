@@ -37,6 +37,7 @@ export default function App() {
   const [blocklistOpen, setBlocklistOpen] = useState(false);
   const [toast, setToast] = useState<{ msg: string; tone: "ok" | "error" } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [pollKey, setPollKey] = useState(0); // bumped to resume polling after a retry
   const toastTimer = useRef<number | undefined>(undefined);
 
   const notify = useCallback((msg: string, tone: "ok" | "error" = "ok") => {
@@ -84,7 +85,14 @@ export default function App() {
     return r;
   }, []);
 
-  // load items for the chosen run; poll while it is still running
+  useEffect(() => {
+    if (runId == null) return;
+    setItems([]);
+    setSelectedId(linkedItem.current);
+    linkedItem.current = null;
+  }, [runId]);
+
+  // load items for the chosen run; poll while it is queued or running
   useEffect(() => {
     if (runId == null) return;
     let stop = false;
@@ -92,20 +100,27 @@ export default function App() {
     const tick = async () => {
       try {
         const r = await refresh(runId);
-        if (!stop && r.status === "running") timer = window.setTimeout(tick, 1500);
+        if (!stop && isActive(r)) timer = window.setTimeout(tick, 1500);
       } catch (e) {
         if (!stop) notify((e as Error).message, "error");
       }
     };
-    setItems([]);
-    setSelectedId(linkedItem.current);
-    linkedItem.current = null;
     tick();
     return () => {
       stop = true;
       window.clearTimeout(timer);
     };
-  }, [runId, refresh, notify]);
+  }, [runId, pollKey, refresh, notify]);
+
+  const retryRun = async (id: number) => {
+    try {
+      await api.retry(id);
+      notify("Run queued again; messages that already have a draft are kept");
+      setPollKey((k) => k + 1);
+    } catch (e) {
+      notify((e as Error).message, "error");
+    }
+  };
 
   // load detail (with history) for the selected item
   useEffect(() => {
@@ -259,7 +274,7 @@ export default function App() {
         </div>
       ) : (
         <>
-          {run && <RunBar run={run} counts={statusCounts} />}
+          {run && <RunBar run={run} counts={statusCounts} onRetry={() => retryRun(run.id)} />}
           <main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[232px_380px_1fr]">
             <aside className="hidden min-h-0 border-r border-slate-200/80 lg:flex lg:flex-col">
               <Sidebar
@@ -299,7 +314,7 @@ export default function App() {
                 statusCounts={statusCounts}
                 query={query}
                 onQuery={setQuery}
-                emptyHint={run?.status === "running" && items.length === 0 ? "Drafts will appear here as the AI finishes them…" : "Nothing here. Try another group or tab."}
+                emptyHint={run && isActive(run) && items.length === 0 ? "Drafts will appear here as the AI finishes them…" : "Nothing here. Try another group or tab."}
               />
             </section>
 
@@ -361,9 +376,11 @@ export default function App() {
   );
 }
 
-function RunBar({ run, counts }: { run: Run; counts: Record<StatusFilter, number> }) {
+const isActive = (r: Run) => r.status === "queued" || r.status === "running";
+
+function RunBar({ run, counts, onRetry }: { run: Run; counts: Record<StatusFilter, number>; onRetry: () => void }) {
   const [showErrors, setShowErrors] = useState(false);
-  const running = run.status === "running";
+  const running = isActive(run);
   const pct = run.total ? Math.round((run.processed / run.total) * 100) : 0;
   const reviewed = counts.approved + counts.rejected + counts.blocked;
 
@@ -383,7 +400,7 @@ function RunBar({ run, counts }: { run: Run; counts: Record<StatusFilter, number
               <Loader2 className="size-4 animate-spin text-indigo-500" />
               <div className="flex-1">
                 <div className="mb-1 flex justify-between text-xs text-slate-500">
-                  <span>AI is drafting replies…</span>
+                  <span>{run.status === "queued" ? "Waiting for a worker…" : "AI is drafting replies…"}</span>
                   <span className="tabular-nums">{run.processed}/{run.total}</span>
                 </div>
                 <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
@@ -394,7 +411,14 @@ function RunBar({ run, counts }: { run: Run; counts: Record<StatusFilter, number
           ) : (
             <div className="flex-1">
               <div className="mb-1 flex justify-between text-xs text-slate-500">
-                <span>{run.status === "failed" ? `Run failed: ${run.error}` : "Review progress"}</span>
+                {run.status === "failed" ? (
+                  <span>
+                    Run failed: {run.error}{" "}
+                    <button onClick={onRetry} className="font-medium text-indigo-600 hover:underline">Retry</button>
+                  </span>
+                ) : (
+                  <span>Review progress</span>
+                )}
                 <span className="tabular-nums">{reviewed}/{counts.all} reviewed</span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">

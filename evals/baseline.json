@@ -1,0 +1,32 @@
+{
+  "about": "Eval gate baseline (python -m evals.gate). Update with --update and commit with the change.",
+  "recorded": "2026-10-27",
+  "source": "live",
+  "prompt_version": "v3",
+  "profile": "standard",
+  "tolerance": 2,
+  "metrics": {
+    "Intent": {
+      "passed": 62,
+      "total": 63,
+      "failing": [
+        "M031"
+      ]
+    },
+    "Review routing": {
+      "passed": 62,
+      "total": 63,
+      "failing": [
+        "M029"
+      ]
+    },
+    "Draft rules": {
+      "passed": 61,
+      "total": 63,
+      "failing": [
+        "M034",
+        "M045"
+      ]
+    }
+  }
+}

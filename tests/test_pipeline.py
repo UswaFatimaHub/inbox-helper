@@ -114,6 +114,21 @@ def test_cache_avoids_second_call(tmp_path):
     assert all(r.lane == "cache" for r in results)
 
 
+def test_cache_key_follows_the_prompt_text_not_the_version_label(monkeypatch):
+    m = msgs(1)[0]
+    key = lambda policy="policy": TriageRun([lane("a", lambda ids: [])], policy, log=lambda _: None)._cache_key(m)
+    base = key()
+    assert key("policy, edited") != base  # policy edit
+    monkeypatch.setattr("inbox_helper.pipeline.build_system_prompt", lambda p: "Edited instructions. " + p)
+    assert key() != base  # instructions / taxonomy edit, PROMPT_VERSION unchanged
+    monkeypatch.undo()
+    monkeypatch.setattr("inbox_helper.pipeline.build_user_prompt", lambda ms: "Edited template " + repr(ms))
+    assert key() != base  # message template edit
+    monkeypatch.undo()
+    renamed = Message(**{**m.__dict__, "message_id": "OTHER"})
+    assert TriageRun([lane("a", lambda ids: [])], "policy", log=lambda _: None)._cache_key(renamed) == base
+
+
 def test_on_result_called_once_per_message_including_failures():
     seen = []
     ok_then_fail = lambda ids: [good_item(i) for i in ids if i != "M3"] if len(ids) > 1 else ProviderError("HTTP 503")

@@ -52,7 +52,7 @@ export interface Run {
   input_name: string;
   profile: string;
   prompt_version: string;
-  status: "running" | "done" | "failed";
+  status: "queued" | "running" | "done" | "failed";
   total: number;
   processed: number;
   elapsed_s: number | null;

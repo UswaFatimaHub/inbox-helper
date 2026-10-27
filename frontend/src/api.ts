@@ -42,6 +42,7 @@ export const api = {
   block: (id: number, reviewer: string, reason?: string) => request<Item>(`/api/items/${id}/block`, json({ reviewer, reason })),
   unblock: (email: string, reviewer: string) =>
     request<{ unblocked: string }>(`/api/blocked/${encodeURIComponent(email)}?reviewer=${encodeURIComponent(reviewer)}`, { method: "DELETE" }),
+  retry: (runId: number) => request<{ id: number }>(`/api/runs/${runId}/retry`, { method: "POST" }),
   exportUrl: (runId: number) => `/api/runs/${runId}/export.csv`,
   auditUrl: (runId: number) => `/api/runs/${runId}/audit.json`,
 };

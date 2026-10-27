@@ -1,0 +1,53 @@
+# Local production-like stack: Postgres + web + a separate worker.
+#   docker compose up --build        then open http://127.0.0.1:8000
+# API keys are read from .env if it exists (the app works without them, but runs need a key).
+# Kill the worker mid-run (docker compose kill worker; docker compose up -d worker): the run resumes.
+
+x-app: &app
+  image: inbox-helper:local
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql+psycopg://inbox:inbox@db:5432/inbox
+  depends_on:
+    db:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: inbox
+      POSTGRES_PASSWORD: inbox  # local only; a hosted database gets its own credentials
+      POSTGRES_DB: inbox
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inbox -d inbox"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  web:
+    <<: *app
+    build: .  # the worker runs the same image
+    environment:
+      DATABASE_URL: postgresql+psycopg://inbox:inbox@db:5432/inbox
+      EMBEDDED_WORKER: "0"
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  worker:
+    <<: *app
+    pull_policy: never  # built by the web service
+    command: ["python", "-m", "inbox_helper.worker"]
+    healthcheck:
+      disable: true
+    volumes:
+      - triage-cache:/app/.cache
+
+volumes:
+  pgdata:
+  triage-cache:

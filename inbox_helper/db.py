@@ -1,18 +1,40 @@
-"""Persistence for runs, triaged items, and the review audit trail.
+"""Persistence for runs, triage jobs, triaged items, and the review audit trail.
 
 SQLite by default (.data/inbox.db). Set DATABASE_URL (e.g. postgresql+psycopg://user:pass@host/db) to use Postgres;
 the schema is plain SQLAlchemy and does not depend on SQLite features.
+
+The schema is owned by Alembic (inbox_helper/migrations). Database() only connects; call upgrade() (or run
+"alembic upgrade head") to create or update the tables. Every schema change needs a new migration.
 """
 import os
 import threading
 from datetime import datetime, timezone
 
 from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint,
-                        create_engine)
+                        create_engine, inspect, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from .config import ROOT
+
+MIGRATIONS_DIR = ROOT / "inbox_helper" / "migrations"
+BASELINE_REVISION = "0001"  # the schema create_all() made before Alembic was added
+MIGRATION_LOCK_ID = 4_810_117_221  # any constant; Postgres advisory lock held while migrating
+
+
+def lock_for_migration(conn) -> None:
+    """Serialise migrations across processes (web + worker start together). Released when the transaction ends."""
+    if conn.dialect.name == "postgresql":
+        conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": MIGRATION_LOCK_ID})
+
+
+def database_url(url: str | None = None) -> str:
+    """DATABASE_URL, or the local SQLite file. Hosts hand out postgres:// URLs; SQLAlchemy needs the driver named."""
+    url = url or os.environ.get("DATABASE_URL") or f"sqlite:///{(ROOT / '.data' / 'inbox.db').as_posix()}"
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
 
 
 def utcnow() -> datetime:
@@ -40,7 +62,7 @@ class Run(Base):
     input_name: Mapped[str] = mapped_column(String(255))
     profile: Mapped[str] = mapped_column(String(32))
     prompt_version: Mapped[str] = mapped_column(String(16))
-    status: Mapped[str] = mapped_column(String(16), default="running")  # running | done | failed
+    status: Mapped[str] = mapped_column(String(16), default="queued")  # queued | running | done | failed
     total: Mapped[int] = mapped_column(Integer, default=0)
     elapsed_s: Mapped[float | None] = mapped_column(Float)
     error: Mapped[str | None] = mapped_column(Text)
@@ -48,6 +70,31 @@ class Run(Base):
     lanes: Mapped[list] = mapped_column(JSON, default=list)
 
     items: Mapped[list["Item"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+    job: Mapped["Job | None"] = relationship(back_populates="run", cascade="all, delete-orphan")
+
+
+class Job(Base):
+    """The work behind a run, kept in the database so it survives restarts (see worker.py).
+
+    A worker claims a queued job, or a running one whose heartbeat has gone stale because its worker died, and
+    processes only the messages that have no item yet. 'worker' fences the claim: a worker that lost its job to a
+    stale-heartbeat takeover cannot overwrite the new owner's status.
+    """
+    __tablename__ = "jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), unique=True)
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)  # queued|running|done|failed
+    messages: Mapped[list] = mapped_column(JSON)  # the validated input, so a resumed job does not need the upload
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    worker: Mapped[str | None] = mapped_column(String(128))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
+
+    run: Mapped[Run] = relationship(back_populates="job")
 
 
 class Item(Base):
@@ -118,9 +165,21 @@ class BlockedSender(Base):
     source_item_id: Mapped[int | None] = mapped_column(ForeignKey("items.id"))
 
 
+ITEM_FIELDS = ("message_id", "received_at", "candidate_name", "candidate_email", "role", "subject", "body", "intent",
+               "secondary_intent", "confidence", "flags", "priority_review", "reason", "draft_reply", "lane", "model",
+               "prompt_version", "latency_s", "error", "processed_at")
+
+
+def apply_result(it: Item, r) -> None:
+    """Copy a pipeline Result onto an Item."""
+    for f in ITEM_FIELDS:
+        setattr(it, f, getattr(r, f))
+    it.review_status = r.review_status
+
+
 class Database:
     def __init__(self, url: str | None = None):
-        url = url or os.environ.get("DATABASE_URL") or f"sqlite:///{(ROOT / '.data' / 'inbox.db').as_posix()}"
+        url = database_url(url)
         kwargs: dict = {}
         if url.startswith("sqlite"):
             kwargs["connect_args"] = {"check_same_thread": False}
@@ -128,7 +187,44 @@ class Database:
                 kwargs["poolclass"] = StaticPool  # one shared in-memory DB (tests)
             else:
                 (ROOT / ".data").mkdir(exist_ok=True)
+        else:
+            kwargs["pool_pre_ping"] = True  # hosted Postgres drops idle connections
+        self.url = url
         self.engine = create_engine(url, **kwargs)
         self.Session = sessionmaker(self.engine, expire_on_commit=False)
         self.write_lock = threading.Lock()  # SQLite allows one writer; harmless on Postgres
-        Base.metadata.create_all(self.engine)
+
+    @property
+    def is_postgres(self) -> bool:
+        return self.engine.dialect.name == "postgresql"
+
+    def upgrade(self, revision: str = "head") -> None:
+        """Apply pending migrations. Safe to call from several processes at once on Postgres (advisory lock).
+
+        A database made by create_all() before Alembic existed is stamped as the baseline first, so its data is kept.
+        """
+        from alembic import command
+
+        with self.engine.begin() as conn:
+            lock_for_migration(conn)
+            tables = set(inspect(conn).get_table_names())
+            cfg = self._alembic_config(conn)
+            if "runs" in tables and "alembic_version" not in tables:
+                command.stamp(cfg, BASELINE_REVISION)
+            command.upgrade(cfg, revision)
+
+    def downgrade(self, revision: str) -> None:
+        from alembic import command
+
+        with self.engine.begin() as conn:
+            lock_for_migration(conn)
+            command.downgrade(self._alembic_config(conn), revision)
+
+    @staticmethod
+    def _alembic_config(conn):
+        from alembic.config import Config
+
+        cfg = Config()
+        cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
+        cfg.attributes["connection"] = conn
+        return cfg

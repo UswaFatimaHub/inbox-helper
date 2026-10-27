@@ -33,6 +33,33 @@ evals\.venv\Scripts\python -m evals.run_eval --live
 Useful flags: `--split sample|holdout`, `--ids M001,M027`, `--judge gemini|gemini-newest|openrouter|none`,
 `--metrics faithfulness,policy,quality`, `--profile standard|best` (for `--live`), `--fresh` (no cache).
 
+## Eval gate (CI)
+
+`run_eval` exits 1 whenever any case fails, and a few known misses always fail. CI therefore gates on a
+comparison with the committed baseline, not on that exit code:
+
+```powershell
+evals\.venv\Scripts\python -m evals.run_eval --live --judge none   # rule metrics on all 63 goldens
+evals\.venv\Scripts\python -m evals.gate                           # compare the newest run with evals/baseline.json
+evals\.venv\Scripts\python -m evals.gate --update                  # accept it as the new baseline, then commit
+```
+
+- **What is gated.** The three rule metrics (Intent, Review routing, Draft rules). The LLM-judged metrics are too
+  noisy to block a merge, and they cost about 6 calls per case. A manual CI run with the `judge` input reports
+  them without gating.
+- **When it fails.** A metric's passing count drops more than `tolerance` (2) below the baseline. The report
+  lists newly failing and newly passing golden ids. A golden with no result counts as a failure.
+- **Why there is a tolerance.** Regenerated drafts are not deterministic, so 2 is a guess. Tighten it once a few
+  CI runs show the real noise.
+- **Baseline.** Recorded 2026-10-27 with prompt v3, standard profile, live:
+  - Intent: 62/63
+  - Review routing: 62/63
+  - Draft rules: 61/63
+  - Known misses: M031, M029, M034, M045
+- **Prompt changes cost API calls.** CI caches model outputs, keyed by the content of `prompt.py`, `config.py`,
+  `pipeline.py`, `providers.py`, the policy and the goldens. Changing any of them regenerates all 63 outputs,
+  about 13 calls.
+
 Each run writes `evals/runs/<timestamp>-<source>/`: `report.md` (pass rates per metric and split, plus every
 failure with its reason), `scores.json`, deepeval's own test-run JSON under `deepeval/` and, for `--live`, the
 `results.json` it scored. The exit code is 1 if any metric failed.

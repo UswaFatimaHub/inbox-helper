@@ -2,37 +2,37 @@
 
 The ASGI app instance lives in inbox_helper.server so that importing this module (e.g. in tests) has no side effects.
 There is deliberately no endpoint that sends a message: approved replies can only be copied or exported.
+
+Runs are processed by a worker (worker.py) that reads the job table. By default one runs inside this process; pass
+embedded_worker=False (EMBEDDED_WORKER=0) when workers run as their own processes.
 """
 import csv
 import io
 import tempfile
-import threading
-import time
 from collections import Counter
+from datetime import timezone
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Literal
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from .config import (ALL_INTENTS, CACHE_PATH, CODE_FLAGS, DEFAULT_LANES, DEFAULT_POLICY, DEFAULT_PROFILE, FLAGS,
-                     PROMPT_VERSION, QUARANTINE_KEEP_FLAGS, ROOT, SYSTEM_INTENTS, load_api_keys)
-from .db import BlockedSender, Database, Item, ReviewEvent, Run, iso, utcnow
+                     PROMPT_VERSION, ROOT, SYSTEM_INTENTS)
+from .db import ITEM_FIELDS, BlockedSender, Database, Item, Job, ReviewEvent, Run, apply_result, iso, utcnow
 from .loader import InputError, LoadResult, Message, load_messages
-from .checks import detect_injection
-from .pipeline import PRIORITY_FLAGS, Cache, Lane, Result, TriageRun, build_lanes
+from .pipeline import PRIORITY_FLAGS, Cache, Lane, TriageRun
+from .worker import Worker, blocked_emails, default_lanes, enqueue_run
 
 SAMPLE_INPUT = ROOT / "data" / "messages.csv"
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
-ITEM_FIELDS = ("message_id", "received_at", "candidate_name", "candidate_email", "role", "subject", "body", "intent",
-               "secondary_intent", "confidence", "flags", "priority_review", "reason", "draft_reply", "lane", "model",
-               "prompt_version", "latency_s", "error", "processed_at")
 
 
 class BlockAction(BaseModel):
@@ -47,54 +47,25 @@ class ReviewAction(BaseModel):
     note: str | None = None   # reason for rejecting, optional
 
 
-def requarantine_pending(db: Database) -> int:
-    """Apply the current quarantine rules to pending items stored by older code.
-
-    Triage rules run when a message is processed, so items from runs made before a rule existed would otherwise keep
-    an approvable draft. The discarded draft is kept in the audit trail. Returns the number of items changed.
-    """
-    changed = 0
-    with db.write_lock, db.Session() as s:
-        pending = s.scalars(select(Item).where(Item.review_status == "pending",
-                                               Item.intent.not_in(list(SYSTEM_INTENTS)))).all()
-        for it in pending:
-            pattern = detect_injection(f"{it.subject}\n{it.body}")
-            if not (pattern or "prompt_injection" in it.flags):
-                continue
-            s.add(ReviewEvent(item=it, action="quarantined", reviewer="system",
-                              before_text=it.final_reply if it.final_reply is not None else it.draft_reply,
-                              note=f"Re-checked with current rules: manipulation attempt, draft discarded "
-                                   f"(AI had labelled it {it.intent})"))
-            it.intent, it.secondary_intent = "manipulation_attempt", None
-            it.flags = sorted({f for f in it.flags if f in QUARANTINE_KEEP_FLAGS}
-                              | {"prompt_injection", *(["injection_pattern"] if pattern else [])})
-            it.draft_reply, it.final_reply, it.priority_review = "", None, True
-            it.reason = ("Matches a known prompt-injection phrase." if pattern
-                         else "The model flagged this message as prompt injection.")
-            changed += 1
-        # tidy items quarantined by an earlier version of these rules, which kept the AI's label and draft flags
-        stale = s.scalars(select(Item).where(Item.review_status == "pending",
-                                             Item.intent == "manipulation_attempt")).all()
-        for it in stale:
-            kept = sorted(f for f in it.flags if f in QUARANTINE_KEEP_FLAGS)
-            if it.secondary_intent or kept != sorted(it.flags):
-                it.secondary_intent, it.flags = None, kept
-                changed += 1
-        s.commit()
-    return changed
-
-
-def default_lanes() -> list[Lane]:
-    return build_lanes(DEFAULT_LANES, load_api_keys(), print)
-
-
 def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane]] = default_lanes,
-               use_cache: bool = True) -> FastAPI:
+               use_cache: bool = True, embedded_worker: bool = True, worker_poll_s: float = 1.0) -> FastAPI:
+    """db must already be migrated (Database.upgrade(); server.py does it at startup)."""
     db = db or Database()
-    if n := requarantine_pending(db):
-        print(f"Quarantined {n} pending item(s) from older runs under the current rules")
     policy = DEFAULT_POLICY.read_text(encoding="utf-8")
-    app = FastAPI(title="Inbox Helper", description="Triage candidate messages; a human reviews every draft.")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if not embedded_worker:
+            yield
+            return
+        thread, stop = Worker(db, lanes_factory, policy, CACHE_PATH if use_cache else None,
+                              poll_s=worker_poll_s).start_thread()
+        yield
+        stop.set()  # an unfinished job keeps its rows; its heartbeat goes stale and the next worker resumes it
+        thread.join(timeout=5)
+
+    app = FastAPI(title="Inbox Helper", description="Triage candidate messages; a human reviews every draft.",
+                  lifespan=lifespan)
 
     def session():
         with db.Session() as s:
@@ -125,62 +96,12 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             raise HTTPException(404, "Item not found")
         return it
 
-    # ---- background triage ------------------------------------------------------------------------------------
-    def apply_result(it: Item, r: Result) -> None:
-        for f in ITEM_FIELDS:
-            setattr(it, f, getattr(r, f))
-        it.review_status = r.review_status
-
-    def blocked_emails() -> frozenset[str]:
-        with db.Session() as s:
-            return frozenset(s.scalars(select(BlockedSender.email)).all())
-
-    def start_run(loaded: LoadResult, input_name: str) -> Run:
-        lanes = lanes_factory()
-        if not lanes:
+    # ---- runs ---------------------------------------------------------------------------------------------------
+    def start_run(loaded: LoadResult, input_name: str) -> int:
+        if not lanes_factory():  # fail now rather than queue a job no worker can process
             raise HTTPException(503, "No AI provider is configured. Add GEMINI_API_KEY or OPENROUTER_API_KEY to .env.")
-        with db.write_lock, db.Session() as s:
-            run = Run(input_name=input_name, profile=DEFAULT_PROFILE, prompt_version=PROMPT_VERSION,
-                      total=len(loaded.messages), input_errors=[asdict(e) for e in loaded.errors])
-            s.add(run)
-            s.commit()
-            run_id = run.id
-
-        def on_result(r: Result) -> None:
-            with db.write_lock, db.Session() as s:
-                it = Item(run_id=run_id)
-                apply_result(it, r)
-                s.add(it)
-                s.commit()
-
-        def work() -> None:
-            started = time.monotonic()
-            status, error = "done", None
-            try:
-                results = TriageRun(lanes, policy, cache=Cache(CACHE_PATH if use_cache else None),
-                                    on_result=on_result, log=print,
-                                    blocked_senders=blocked_emails()).run(loaded.messages)
-                # safety net: every message must end up stored, even if a live insert failed
-                with db.write_lock, db.Session() as s:
-                    stored = set(s.scalars(select(Item.message_id).where(Item.run_id == run_id)).all())
-                    for r in results:
-                        if r.message_id not in stored:
-                            it = Item(run_id=run_id)
-                            apply_result(it, r)
-                            s.add(it)
-                    s.commit()
-            except Exception as e:  # keep the run visible as failed instead of stuck "running"
-                status, error = "failed", f"{e.__class__.__name__}: {e}"
-            with db.write_lock, db.Session() as s:
-                run = s.get(Run, run_id)
-                run.status, run.error = status, error
-                run.finished_at, run.elapsed_s = utcnow(), round(time.monotonic() - started, 1)
-                run.lanes = [{"name": l.name, "calls": l.calls, "failures": l.failures, "disabled": l.disabled}
-                             for l in lanes]
-                s.commit()
-
-        threading.Thread(target=work, daemon=True, name=f"run-{run_id}").start()
-        return run
+        return enqueue_run(db, loaded.messages, input_name=input_name, profile=DEFAULT_PROFILE,
+                           prompt_version=PROMPT_VERSION, input_errors=[asdict(e) for e in loaded.errors])
 
     def load_or_400(path: Path) -> LoadResult:
         try:
@@ -193,6 +114,22 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
         return loaded
 
     # ---- routes -----------------------------------------------------------------------------------------------
+    @app.get("/api/health")
+    def health():
+        """For the host's health check: the database answers. jobs_queued / oldest_queued_s growing means no worker
+        is running."""
+        try:
+            with db.Session() as s:
+                queued, oldest = s.execute(select(func.count(Job.id), func.min(Job.created_at))
+                                           .where(Job.status == "queued")).one()
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"database: {e.__class__.__name__}"}, status_code=503)
+        if oldest is not None and oldest.tzinfo is None:  # SQLite drops tzinfo; stored values are UTC
+            oldest = oldest.replace(tzinfo=timezone.utc)
+        return {"ok": True, "prompt_version": PROMPT_VERSION, "embedded_worker": embedded_worker,
+                "jobs_queued": queued,
+                "oldest_queued_s": round((utcnow() - oldest).total_seconds()) if oldest else None}
+
     @app.get("/api/meta")
     def meta():
         return {"intents": ALL_INTENTS, "system_intents": sorted(SYSTEM_INTENTS), "flags": {**FLAGS, **CODE_FLAGS},
@@ -207,8 +144,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
 
     @app.post("/api/runs/sample", status_code=201)
     def run_sample():
-        run = start_run(load_or_400(SAMPLE_INPUT), "Sample inbox (messages.csv)")
-        return {"id": run.id}
+        return {"id": start_run(load_or_400(SAMPLE_INPUT), "Sample inbox (messages.csv)")}
 
     @app.post("/api/runs", status_code=201)
     async def run_upload(file: UploadFile = File(...)):
@@ -220,8 +156,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             path = Path(tmp) / name
             path.write_bytes(data)
             loaded = load_or_400(path)
-        run = start_run(loaded, name)
-        return {"id": run.id}
+        return {"id": start_run(loaded, name)}
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: int, s=Depends(session)):
@@ -229,6 +164,22 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
         if not run:
             raise HTTPException(404, "Run not found")
         return run_json(run, run.items)
+
+    @app.post("/api/runs/{run_id}/retry")
+    def retry_run(run_id: int, s=Depends(session)):
+        """Re-queue a failed run. Messages that already have a draft are kept; only the rest are processed."""
+        with db.write_lock:
+            run = s.get(Run, run_id, options=[selectinload(Run.job)])
+            if not run:
+                raise HTTPException(404, "Run not found")
+            if run.status != "failed":
+                raise HTTPException(409, f"Only failed runs can be retried; this one is {run.status}.")
+            if run.job is None:
+                raise HTTPException(409, "This run was made before runs could be resumed. Start a new run instead.")
+            run.status, run.error, run.finished_at = "queued", None, None
+            run.job.status, run.job.error, run.job.attempts, run.job.worker = "queued", None, 0, None
+            s.commit()
+        return {"id": run_id}
 
     @app.get("/api/runs/{run_id}/items")
     def list_items(run_id: int, s=Depends(session)):
@@ -287,7 +238,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
                       subject=it.subject)
         msg.warnings = [f for f in it.flags if f in ("invalid_email", "duplicate_message")]
         [result] = TriageRun(lanes, policy, cache=Cache(None), batch_size=1, log=print,
-                             blocked_senders=blocked_emails()).run([msg])
+                             blocked_senders=blocked_emails(db)).run([msg])
         with db.write_lock:
             before = it.final_reply if it.final_reply is not None else it.draft_reply
             apply_result(it, result)
