@@ -178,7 +178,8 @@ The prompt fixed the drafts; the bigger models didn't help. Gemini Pro models ha
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push and pull request:
+`.github/workflows/ci.yml` runs on every push and pull request. A manual run is available under
+**Actions → CI → Run workflow**.
 
 1. Backend tests on SQLite and on Postgres 17. Also runs `alembic upgrade head` and `alembic check` from scratch.
 2. Frontend type check and build.
@@ -189,7 +190,18 @@ The prompt fixed the drafts; the bigger models didn't help. Gemini Pro models ha
    (`OPENROUTER_API_KEY` is optional and uses its 50/day quota). An unchanged prompt is served from the cache,
    so it costs no API calls.
 
-To block merges, make these checks required in the branch protection settings.
+**Status (2026-10-27).** All five jobs pass on GitHub
+([first green run](https://github.com/UswaFatimaHub/inbox-helper/actions/runs/40500512664), about 3.5 minutes).
+On that run:
+
+- The eval gate regenerated 60 of the 63 outputs on an empty cache. It passed at 62/63, 62/63 and 60/63.
+- `gemini-3.5-flash` returned "high demand" 503 errors on 4 batches. Those batches moved to the other lanes, and
+  every golden still got a result.
+
+**Not done yet.**
+- Branch protection: until the checks are marked required, a red check does not block a merge.
+- `actions/cache` and `actions/upload-artifact` are on v4, which targets the deprecated Node 20. GitHub runs them
+  on Node 24 for now and shows a warning.
 
 ## Known limitations
 

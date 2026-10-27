@@ -49,16 +49,28 @@ evals\.venv\Scripts\python -m evals.gate --update                  # accept it a
   them without gating.
 - **When it fails.** A metric's passing count drops more than `tolerance` (2) below the baseline. The report
   lists newly failing and newly passing golden ids. A golden with no result counts as a failure.
-- **Why there is a tolerance.** Regenerated drafts are not deterministic, so 2 is a guess. Tighten it once a few
-  CI runs show the real noise.
+- **Why there is a tolerance.** Regenerated drafts are not deterministic. In the first CI run (same prompt as
+  the baseline, regenerated on an empty cache), each metric moved by about one case:
+
+  | Metric | Baseline | CI run | Newly failing | Newly passing |
+  |---|---|---|---|---|
+  | Intent | 62/63 | 62/63 | - | - |
+  | Review routing | 62/63 | 62/63 | G111 (missed `sensitive`) | M029 |
+  | Draft rules | 61/63 | 60/63 | G110 (no sign-off) | - |
+
+  A tolerance of 1 would have failed a change that made no difference, so it stays at 2. Revisit it after more
+  runs. The `sensitive` flag and the sign-off are the least stable rules.
 - **Baseline.** Recorded 2026-10-27 with prompt v3, standard profile, live:
   - Intent: 62/63
   - Review routing: 62/63
   - Draft rules: 61/63
   - Known misses: M031, M029, M034, M045
-- **Prompt changes cost API calls.** CI caches model outputs, keyed by the content of `prompt.py`, `config.py`,
-  `pipeline.py`, `providers.py`, the policy and the goldens. Changing any of them regenerates all 63 outputs,
-  about 13 calls.
+- **Prompt changes cost API calls.** Each cached output is keyed on the exact prompt the model saw: the system
+  prompt (instructions, intents, flags, policy) plus the rendered message. Any edit to these misses the cache,
+  even if `PROMPT_VERSION` is not bumped. On top of that, CI keys its cache on the contents of `prompt.py`,
+  `config.py`, `pipeline.py`, `providers.py`, the policy and the goldens. That also covers model and provider
+  changes, which the prompt text does not show. Changing any of these files regenerates every output: about 12
+  batches of 5, plus retries.
 
 Each run writes `evals/runs/<timestamp>-<source>/`: `report.md` (pass rates per metric and split, plus every
 failure with its reason), `scores.json`, deepeval's own test-run JSON under `deepeval/` and, for `--live`, the
