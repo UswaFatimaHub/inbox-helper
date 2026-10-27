@@ -161,3 +161,27 @@ def test_blocked_sender_is_never_sent_to_the_model():
     assert r1.intent == "blocked_sender" and r1.review_status == "blocked" and r1.draft_reply == ""
     assert r2.intent == "application_status"
     assert a.client.calls == [["B2"]]
+
+
+class PromptRecorder:
+    def __init__(self):
+        self.prompts = []
+
+    def complete(self, system, user):
+        self.prompts.append(user)
+        return Completion(json.dumps({"results": [good_item(i) for i in ids_in(user)]}), "fake-model", 0.0)
+
+
+def test_identifiers_never_reach_the_model_but_stay_in_the_result():
+    client = PromptRecorder()
+    pii = Message(message_id="P1", subject="Joining details, phone +92 300 1234567",
+                  body="My CNIC is 35202-1234567-1 and my account number is 0123456789012.")
+    plain = Message(message_id="P2", body="Any update on my application?")
+    results = TriageRun([Lane("a", client, RateLimiter(100_000))], "policy", log=lambda _: None).run([pii, plain])
+    sent = "\n".join(client.prompts)
+    assert not any(v in sent for v in ("35202", "1234567", "0123456789012", "300 1234567"))
+    assert "[NATIONAL_ID]" in sent and "[NUMBER]" in sent and "[PHONE]" in sent
+    by_id = {r.message_id: r for r in results}
+    assert by_id["P1"].body == pii.body and by_id["P1"].subject == pii.subject  # the reviewer sees the original
+    assert {"personal_data_hidden", "sensitive"} <= set(by_id["P1"].flags) and by_id["P1"].priority_review
+    assert "personal_data_hidden" not in by_id["P2"].flags

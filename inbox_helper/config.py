@@ -59,6 +59,7 @@ CODE_FLAGS = {
     "processing_failed": "No model produced a usable result; needs a manual reply.",
     "injection_pattern": "Text matches a known prompt-injection phrase.",
     "blocked_sender": "Sender is on the blocklist.",
+    "personal_data_hidden": "ID, bank, card, passport or phone numbers or email addresses were hidden from the AI.",
 }
 
 # Flags that stay meaningful on a quarantined message. Others (low_confidence, needs_info_not_available, ...)

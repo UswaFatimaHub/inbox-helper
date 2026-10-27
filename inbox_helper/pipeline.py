@@ -20,6 +20,7 @@ from .config import PRIORITY_INTENTS, PROMPT_VERSION, QUARANTINE_KEEP_FLAGS, Lan
 from .loader import Message
 from .prompt import build_system_prompt, build_user_prompt
 from .providers import Completion, GeminiClient, OpenRouterClient, ProviderError, RateLimiter
+from .redact import redact
 
 # Flags that move a draft to the top of the review queue.
 PRIORITY_FLAGS = {"ambiguous", "sensitive", "unsupported_request", "prompt_injection", "injection_pattern", "hostile_tone",
@@ -144,10 +145,19 @@ class TriageRun:
         self._outstanding = 0
         self._done = threading.Event()
         self._results: dict[str, Result] = {}
+        self._for_model: dict[str, Message] = {}   # message_id -> the copy the AI sees, identifiers hidden
+        self._hidden: dict[str, list[str]] = {}    # message_id -> kinds of identifiers hidden
         self._last_error: dict[str, str] = {}
 
     # ---- public -------------------------------------------------------------------------------------------
     def run(self, messages: list[Message]) -> list[Result]:
+        for m in messages:
+            subject, body = redact(m.subject), redact(m.body)
+            self._for_model[m.message_id] = replace(m, subject=subject.text, body=body.text)
+            if kinds := sorted(set(subject.kinds + body.kinds)):
+                self._hidden[m.message_id] = kinds
+        if self._hidden:
+            self.log(f"identifiers hidden from the AI in {len(self._hidden)} message(s)")
         todo = []
         for m in messages:
             if m.candidate_email.strip().lower() in self.blocked_senders:
@@ -227,7 +237,8 @@ class TriageRun:
         lane.limiter.wait()
         lane.calls += 1
         try:
-            completion = lane.client.complete(self.system, build_user_prompt(job.messages))
+            prompt = build_user_prompt([self._model_copy(m) for m in job.messages])
+            completion = lane.client.complete(self.system, prompt)
             found = parse_batch_response(completion.text, ids)
         except (ProviderError, ParseError) as e:
             self._on_failure(lane, job, e, label)
@@ -270,7 +281,7 @@ class TriageRun:
     def _cache_key(self, m: Message) -> str:
         # Everything the model is shown for this message, so any edit to the prompt, taxonomy or policy misses the
         # cache without anyone having to bump PROMPT_VERSION. The id is blanked: the same text under another id hits.
-        blob = json.dumps([self._system_hash, build_user_prompt([replace(m, message_id="")])])
+        blob = json.dumps([self._system_hash, build_user_prompt([replace(self._model_copy(m), message_id="")])])
         return hashlib.sha256(blob.encode()).hexdigest()
 
     def _record(self, m: Message, raw: dict, lane: str, model: str, latency: float | None) -> None:
@@ -315,7 +326,13 @@ class TriageRun:
                       error=None, processed_at=_now(),
                       review_status="blocked" if intent == "blocked_sender" else "pending")
 
+    def _model_copy(self, m: Message) -> Message:
+        return self._for_model.get(m.message_id) or replace(m, subject=redact(m.subject).text, body=redact(m.body).text)
+
     def _emit(self, result: Result) -> None:
+        if result.message_id in self._hidden:  # identity/financial data: always a sensitive message
+            result.flags = sorted({*result.flags, "personal_data_hidden", "sensitive"})
+            result.priority_review = True
         if self._on_result:
             try:
                 self._on_result(result)

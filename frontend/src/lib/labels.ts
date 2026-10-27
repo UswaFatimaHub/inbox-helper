@@ -50,6 +50,7 @@ export const FLAG_LABELS: Record<string, string> = {
   processing_failed: "AI failed — write manually",
   injection_pattern: "Known injection phrase",
   blocked_sender: "Blocked sender",
+  personal_data_hidden: "Personal data hidden from AI",
 };
 
 /** high = the draft itself may be wrong; attention = handle with care; info = context only */

@@ -128,6 +128,31 @@ CSV/JSON -> loader (validation, row errors) -> batches of 5 -> shared queue
 - **Policy.** `policies/recruiting_policy.md` (for a fictional company) is the only source of facts the drafts
   may use.
 
+## Personal data is hidden from the AI
+
+Before a message goes to any model, `inbox_helper/redact.py` swaps identifiers for tokens:
+
+| Hidden | Becomes |
+|---|---|
+| CNIC (`35202-1234567-1`) | `[NATIONAL_ID]` |
+| IBAN | `[IBAN]` |
+| Card numbers (Luhn-checked) | `[CARD_NUMBER]` |
+| Phone numbers | `[PHONE]` |
+| Passport numbers (next to the word "passport") | `[PASSPORT]` |
+| Email addresses in the text | `[EMAIL]` |
+| Any other number with 9+ digits | `[NUMBER]` |
+
+- **The reviewer still sees everything.** The stored message is the original; only the copy sent to the AI is
+  redacted. The message gets the `personal_data_hidden` and `sensitive` flags, so it goes to the top of the
+  review queue.
+- **What is kept.** Names, because drafts greet the person by name. Dates, times, years, money amounts and short
+  reference numbers are kept too, because drafts need them. Tests pin both sides.
+- **Effect on the sample.** In the synthetic data, only M039 (CNIC and bank account number) contains identifiers.
+  Its draft still tells the candidate not to email them, and the eval scores did not change.
+- **Limits.** The rules are patterns, not a trained detector. Identifiers in unusual formats, addresses and
+  free-text health details still reach the model. That is one reason real candidate data also needs a paid API
+  with no-training terms.
+
 ## Manipulation attempts and the blocklist
 
 Messages that try to instruct the AI ("ignore all previous instructions…", fake `[SYSTEM]` notes, "AI assistant:
@@ -215,4 +240,4 @@ On that run:
 - The expected labels were written with AI help, so accuracy against them is a sanity check, not an independent
   benchmark.
 - Free-tier Gemini may use inputs to improve Google's products. That's fine for synthetic data, but not for real
-  candidate data.
+  candidate data, even with identifiers hidden.
