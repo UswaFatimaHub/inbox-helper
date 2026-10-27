@@ -207,7 +207,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
                   </button>
                 )}
                 <div className="flex-1 text-xs text-amber-700 sm:text-center">
-                  {needName ? "Enter your name at the top to review." : !email && "No sender email, so this sender cannot be blocked."}
+                  {needName ? "Sign in to review." : !email && "No sender email, so this sender cannot be blocked."}
                 </div>
                 <Button
                   variant="secondary"
@@ -299,7 +299,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
                 <Button variant="danger" icon={<X className="size-4" />} disabled={needName || !!busy} onClick={() => setRejecting(true)}>
                   Reject
                 </Button>
-                <div className="flex-1 text-xs text-amber-700 sm:text-center">{needName && "Enter your name at the top to review."}</div>
+                <div className="flex-1 text-xs text-amber-700 sm:text-center">{needName && "Sign in to review."}</div>
                 <Button
                   variant="secondary"
                   icon={<Save className="size-4" />}

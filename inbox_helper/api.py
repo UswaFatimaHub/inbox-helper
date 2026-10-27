@@ -16,13 +16,15 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Literal
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
+from starlette.middleware.sessions import SessionMiddleware
 
+from .auth import SESSION_MAX_AGE_S, AuthConfig, auth_router, exchange_code_with_google, require_login
 from .config import (ALL_INTENTS, CACHE_PATH, CODE_FLAGS, DEFAULT_LANES, DEFAULT_POLICY, DEFAULT_PROFILE, FLAGS,
                      PROMPT_VERSION, ROOT, SYSTEM_INTENTS)
 from .db import ITEM_FIELDS, BlockedSender, Database, Item, Job, ReviewEvent, Run, apply_result, iso, utcnow
@@ -35,22 +37,24 @@ FRONTEND_DIST = ROOT / "frontend" / "dist"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 
 
+# The reviewer is always the signed-in user (request.state.user), never a name sent by the browser.
 class BlockAction(BaseModel):
-    reviewer: str = Field(min_length=1, max_length=80)
     reason: str | None = None
 
 
 class ReviewAction(BaseModel):
     action: Literal["save", "approve", "reject", "reopen"]
-    reviewer: str = Field(min_length=1, max_length=80)
     text: str | None = None   # the reply as edited by the reviewer (save/approve)
     note: str | None = None   # reason for rejecting, optional
 
 
 def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane]] = default_lanes,
-               use_cache: bool = True, embedded_worker: bool = True, worker_poll_s: float = 1.0) -> FastAPI:
-    """db must already be migrated (Database.upgrade(); server.py does it at startup)."""
+               use_cache: bool = True, embedded_worker: bool = True, worker_poll_s: float = 1.0,
+               auth: AuthConfig | None = None, exchange_code=exchange_code_with_google) -> FastAPI:
+    """db must already be migrated (Database.upgrade(); server.py does it at startup).
+    auth defaults to AuthConfig.from_env(), which refuses to start without a complete sign-in setup."""
     db = db or Database()
+    auth = auth or AuthConfig.from_env()
     policy = DEFAULT_POLICY.read_text(encoding="utf-8")
 
     @asynccontextmanager
@@ -66,6 +70,13 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
 
     app = FastAPI(title="Inbox Helper", description="Triage candidate messages; a human reviews every draft.",
                   lifespan=lifespan)
+    app.middleware("http")(require_login(auth))
+    app.add_middleware(SessionMiddleware, secret_key=auth.session_secret, session_cookie="inbox_session",
+                       max_age=SESSION_MAX_AGE_S, same_site="lax", https_only=auth.secure_cookies)
+    app.include_router(auth_router(auth, exchange_code))
+
+    def reviewer(request: Request) -> str:
+        return request.state.user.email
 
     def session():
         with db.Session() as s:
@@ -130,6 +141,11 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
                 "jobs_queued": queued,
                 "oldest_queued_s": round((utcnow() - oldest).total_seconds()) if oldest else None}
 
+    @app.get("/api/me")
+    def me(request: Request):
+        user = request.state.user
+        return {"email": user.email, "name": user.name, "mode": auth.mode}
+
     @app.get("/api/meta")
     def meta():
         return {"intents": ALL_INTENTS, "system_intents": sorted(SYSTEM_INTENTS), "flags": {**FLAGS, **CODE_FLAGS},
@@ -191,10 +207,10 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
         return item_json(get_item(s, item_id), events=True)
 
     @app.post("/api/items/{item_id}/review")
-    def review(item_id: int, body: ReviewAction, s=Depends(session)):
+    def review(item_id: int, body: ReviewAction, request: Request, s=Depends(session)):
         with db.write_lock:
             it = get_item(s, item_id)
-            reviewer = body.reviewer.strip()
+            by = reviewer(request)
             current = it.final_reply if it.final_reply is not None else it.draft_reply
             text = (body.text or "").strip()
             if body.action in ("save", "approve", "reject") and it.review_status != "pending":
@@ -202,30 +218,30 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             if body.action == "save":
                 if text == current:
                     return item_json(it, events=True)
-                s.add(ReviewEvent(item=it, action="edited", reviewer=reviewer, before_text=current, after_text=text))
+                s.add(ReviewEvent(item=it, action="edited", reviewer=by, before_text=current, after_text=text))
                 it.final_reply = text
             elif body.action == "approve":
                 if not text:
                     raise HTTPException(400, "Cannot approve an empty reply.")
-                s.add(ReviewEvent(item=it, action="approved", reviewer=reviewer, before_text=it.draft_reply,
+                s.add(ReviewEvent(item=it, action="approved", reviewer=by, before_text=it.draft_reply,
                                   after_text=text))
                 it.final_reply, it.review_status = text, "approved"
-                it.reviewed_by, it.reviewed_at, it.review_note = reviewer, utcnow(), None
+                it.reviewed_by, it.reviewed_at, it.review_note = by, utcnow(), None
             elif body.action == "reject":
                 note = (body.note or "").strip() or None
-                s.add(ReviewEvent(item=it, action="rejected", reviewer=reviewer, before_text=current, note=note))
-                it.review_status, it.reviewed_by, it.reviewed_at, it.review_note = "rejected", reviewer, utcnow(), note
+                s.add(ReviewEvent(item=it, action="rejected", reviewer=by, before_text=current, note=note))
+                it.review_status, it.reviewed_by, it.reviewed_at, it.review_note = "rejected", by, utcnow(), note
             else:  # reopen
                 if it.review_status == "pending":
                     return item_json(it, events=True)
-                s.add(ReviewEvent(item=it, action="reopened", reviewer=reviewer, note=it.review_status))
+                s.add(ReviewEvent(item=it, action="reopened", reviewer=by, note=it.review_status))
                 it.review_status, it.reviewed_by, it.reviewed_at = "pending", None, None
             s.commit()
             s.refresh(it)
             return item_json(it, events=True)
 
     @app.post("/api/items/{item_id}/regenerate")
-    def regenerate(item_id: int, reviewer: str = "reviewer", s=Depends(session)):
+    def regenerate(item_id: int, request: Request, s=Depends(session)):
         """Ask the model again for one message (no cache). Only for pending items; runs synchronously."""
         it = get_item(s, item_id)
         if it.review_status != "pending":
@@ -243,7 +259,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             before = it.final_reply if it.final_reply is not None else it.draft_reply
             apply_result(it, result)
             it.final_reply = None
-            s.add(ReviewEvent(item=it, action="regenerated", reviewer=reviewer.strip() or "reviewer",
+            s.add(ReviewEvent(item=it, action="regenerated", reviewer=reviewer(request),
                               before_text=before, after_text=result.draft_reply,
                               note=result.error or f"{result.lane} / {result.model}"))
             s.commit()
@@ -258,34 +274,34 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
                  "source_item_id": b.source_item_id} for b in rows]
 
     @app.post("/api/items/{item_id}/block")
-    def block_sender(item_id: int, body: BlockAction, s=Depends(session)):
+    def block_sender(item_id: int, body: BlockAction, request: Request, s=Depends(session)):
         """Block the item's sender and close every pending message from them, in every run."""
         with db.write_lock:
             it = get_item(s, item_id)
             email = it.candidate_email.strip().lower()
             if not email:
                 raise HTTPException(400, "This message has no sender email address to block.")
-            reviewer, reason = body.reviewer.strip(), (body.reason or "").strip() or None
+            by, reason = reviewer(request), (body.reason or "").strip() or None
             if not s.get(BlockedSender, email):
-                s.add(BlockedSender(email=email, reason=reason, blocked_by=reviewer, source_item_id=it.id))
+                s.add(BlockedSender(email=email, reason=reason, blocked_by=by, source_item_id=it.id))
             pending = s.scalars(select(Item).where(Item.review_status == "pending")).all()
             for other in [i for i in pending if i.candidate_email.strip().lower() == email]:
-                s.add(ReviewEvent(item=other, action="blocked", reviewer=reviewer, note=reason or f"Blocked {email}"))
-                other.review_status, other.reviewed_by, other.reviewed_at = "blocked", reviewer, utcnow()
+                s.add(ReviewEvent(item=other, action="blocked", reviewer=by, note=reason or f"Blocked {email}"))
+                other.review_status, other.reviewed_by, other.reviewed_at = "blocked", by, utcnow()
                 other.review_note = reason
             s.commit()
             s.refresh(it)
             return item_json(it, events=True)
 
     @app.delete("/api/blocked/{email}")
-    def unblock_sender(email: str, reviewer: str, s=Depends(session)):
+    def unblock_sender(email: str, request: Request, s=Depends(session)):
         """Future messages from this sender are processed again. Past blocked items stay closed until reopened."""
         with db.write_lock:
             row = s.get(BlockedSender, email.strip().lower())
             if not row:
                 raise HTTPException(404, "That sender is not blocked.")
             if row.source_item_id and (src := s.get(Item, row.source_item_id)):
-                s.add(ReviewEvent(item=src, action="unblocked", reviewer=reviewer.strip() or "reviewer", note=row.email))
+                s.add(ReviewEvent(item=src, action="unblocked", reviewer=reviewer(request), note=row.email))
             s.delete(row)
             s.commit()
         return {"unblocked": email}

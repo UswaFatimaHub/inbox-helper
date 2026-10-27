@@ -1,7 +1,14 @@
-import type { BlockedSender, Item, Meta, Run } from "./types";
+import type { BlockedSender, Item, Me, Meta, Run } from "./types";
+
+/** Thrown (and announced with a "signed-out" window event) when the session is missing or has expired. */
+export class SignedOutError extends Error {}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
+  if (res.status === 401) {
+    window.dispatchEvent(new Event("signed-out"));
+    throw new SignedOutError("Your session has ended. Sign in again.");
+  }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
     try {
@@ -23,6 +30,9 @@ const json = (body: unknown): RequestInit => ({
 });
 
 export const api = {
+  me: () => request<Me>("/api/me"),
+  logout: () => fetch("/api/auth/logout", { method: "POST" }),
+  loginUrl: "/api/auth/google/login",
   meta: () => request<Meta>("/api/meta"),
   runs: () => request<Run[]>("/api/runs"),
   run: (id: number) => request<Run>(`/api/runs/${id}`),
@@ -34,14 +44,13 @@ export const api = {
     form.append("file", file);
     return request<{ id: number }>("/api/runs", { method: "POST", body: form });
   },
-  review: (id: number, body: { action: "save" | "approve" | "reject" | "reopen"; reviewer: string; text?: string; note?: string }) =>
+  // the reviewer is the signed-in user; the server records it
+  review: (id: number, body: { action: "save" | "approve" | "reject" | "reopen"; text?: string; note?: string }) =>
     request<Item>(`/api/items/${id}/review`, json(body)),
-  regenerate: (id: number, reviewer: string) =>
-    request<Item>(`/api/items/${id}/regenerate?reviewer=${encodeURIComponent(reviewer)}`, { method: "POST" }),
+  regenerate: (id: number) => request<Item>(`/api/items/${id}/regenerate`, { method: "POST" }),
   blocked: () => request<BlockedSender[]>("/api/blocked"),
-  block: (id: number, reviewer: string, reason?: string) => request<Item>(`/api/items/${id}/block`, json({ reviewer, reason })),
-  unblock: (email: string, reviewer: string) =>
-    request<{ unblocked: string }>(`/api/blocked/${encodeURIComponent(email)}?reviewer=${encodeURIComponent(reviewer)}`, { method: "DELETE" }),
+  block: (id: number, reason?: string) => request<Item>(`/api/items/${id}/block`, json({ reason })),
+  unblock: (email: string) => request<{ unblocked: string }>(`/api/blocked/${encodeURIComponent(email)}`, { method: "DELETE" }),
   retry: (runId: number) => request<{ id: number }>(`/api/runs/${runId}/retry`, { method: "POST" }),
   exportUrl: (runId: number) => `/api/runs/${runId}/export.csv`,
   auditUrl: (runId: number) => `/api/runs/${runId}/audit.json`,

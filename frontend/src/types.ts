@@ -1,3 +1,9 @@
+export interface Me {
+  email: string;
+  name: string;
+  mode: "google" | "dev";
+}
+
 export type ReviewStatus = "pending" | "approved" | "rejected" | "blocked";
 
 export interface ReviewEvent {

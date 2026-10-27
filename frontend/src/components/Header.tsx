@@ -1,15 +1,15 @@
-import { ChevronDown, Download, Plus, ShieldCheck, UserRound } from "lucide-react";
+import { ChevronDown, Download, LogOut, Plus, ShieldCheck, UserRound } from "lucide-react";
 import { api } from "../api";
 import { formatWhen } from "../lib/labels";
-import type { Run } from "../types";
+import type { Me, Run } from "../types";
 import { Button } from "./ui";
 
-export function Header({ runs, runId, onSelectRun, reviewer, onReviewer, onNewRun }: {
+export function Header({ runs, runId, onSelectRun, user, onSignOut, onNewRun }: {
   runs: Run[];
   runId: number | null;
   onSelectRun: (id: number) => void;
-  reviewer: string;
-  onReviewer: (name: string) => void;
+  user: Me | null;
+  onSignOut: () => void;
   onNewRun: () => void;
 }) {
   return (
@@ -52,21 +52,22 @@ export function Header({ runs, runId, onSelectRun, reviewer, onReviewer, onNewRu
             </a>
           )}
 
-          <label
-            className={
-              "flex h-9 items-center gap-2 rounded-lg px-2.5 ring-1 ring-inset " +
-              (reviewer ? "ring-slate-200" : "bg-amber-50 ring-amber-300")
-            }
-            title="Your name is recorded on every review action"
-          >
-            <UserRound className={"size-4 " + (reviewer ? "text-slate-400" : "text-amber-600")} />
-            <input
-              value={reviewer}
-              onChange={(e) => onReviewer(e.target.value)}
-              placeholder="Your name"
-              className="w-20 bg-transparent text-sm placeholder:text-amber-700/70 focus:outline-none sm:w-32"
-            />
-          </label>
+          {user && (
+            <div
+              className="flex h-9 items-center gap-2 rounded-lg pr-1 pl-2.5 ring-1 ring-slate-200 ring-inset"
+              title={`Signed in as ${user.email}. Recorded on every review action.`}
+            >
+              <UserRound className="size-4 text-slate-400" />
+              <span className="max-w-24 truncate text-sm text-slate-700 sm:max-w-40">{user.name}</span>
+              {user.mode === "google" ? (
+                <button onClick={onSignOut} title="Sign out" className="grid size-7 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+                  <LogOut className="size-4" />
+                </button>
+              ) : (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800" title="AUTH_MODE=dev: no sign-in">DEV</span>
+              )}
+            </div>
+          )}
 
           <Button variant="primary" icon={<Plus className="size-4" />} onClick={onNewRun}>
             <span className="hidden sm:inline">New triage</span>

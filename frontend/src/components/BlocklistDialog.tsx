@@ -49,7 +49,7 @@ export function BlocklistDialog({ open, blocked, reviewer, onClose, onUnblock }:
                   variant="secondary"
                   disabled={!reviewer.trim() || (busy !== null && busy !== b.email)}
                   loading={busy === b.email}
-                  title={reviewer.trim() ? "Process this sender's future messages again" : "Enter your name at the top first"}
+                  title={reviewer.trim() ? "Process this sender's future messages again" : "Sign in first"}
                   onClick={async () => {
                     setBusy(b.email);
                     try {

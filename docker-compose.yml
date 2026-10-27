@@ -36,6 +36,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://inbox:inbox@db:5432/inbox
       EMBEDDED_WORKER: "0"
+      AUTH_MODE: ${AUTH_MODE:-dev}  # no Google sign-in locally unless .env says AUTH_MODE=google
     ports:
       - "127.0.0.1:8000:8000"
 

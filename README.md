@@ -6,11 +6,12 @@ trail. Approved replies can only be copied or exported.
 
 ## Setup
 
-Requires Python 3.12, Node 22 and a `.env` file in the project root (either key alone works):
+Requires Python 3.12, Node 22 and a `.env` file in the project root (either API key alone works):
 
 ```
 GEMINI_API_KEY=...
 OPENROUTER_API_KEY=...
+AUTH_MODE=dev          # local use without Google sign-in; see "Sign-in"
 ```
 
 ```powershell
@@ -25,8 +26,9 @@ cd frontend; npm install; npm run build; cd ..
 .venv\Scripts\python -m uvicorn inbox_helper.server:app --port 8000
 ```
 
-Open http://127.0.0.1:8000, enter your name at the top, then click **New triage** and either upload a CSV or JSON
-file or use the sample inbox. Drafts appear as the AI finishes them. Review the **Needs attention** group first.
+Open http://127.0.0.1:8000, then click **New triage** and either upload a CSV or JSON file or use the sample
+inbox. With `AUTH_MODE=dev` you act as the local reviewer; with Google sign-in, your login is recorded on every
+action. Drafts appear as the AI finishes them. Review the **Needs attention** group first.
 Keyboard: `J`/`K` move between messages, `Ctrl+Enter` approves.
 
 For frontend development with hot reload, also run `cd frontend; npm run dev` and open http://localhost:5173. It
@@ -52,6 +54,7 @@ host's proxy. `GET /api/health` is the health check.
 | `EMBEDDED_WORKER` | `1` | `0`: this web process does not process runs; start `python -m inbox_helper.worker` separately |
 | `AUTO_MIGRATE` | `1` | `0`: do not apply migrations at startup; run `alembic upgrade head` as a release step |
 | `PORT` | `8000` | Port inside the container |
+| `AUTH_MODE` | `google` | `dev` turns sign-in off (local only); see "Sign-in" for the Google settings |
 
 A single instance with the embedded worker is enough for one team. Compose runs a separate worker to show that
 the two can be split.
@@ -72,6 +75,63 @@ The schema is versioned in `inbox_helper/migrations/versions/`. Each schema chan
 - Data fixes are migrations too. `0002` closes runs that the old in-process threads left stuck at "running".
   `0003` is the one-off re-quarantine of injection messages from runs #1 and #2, which used to run on every
   startup.
+
+## Sign-in
+
+Reviewers sign in with Google, and only the addresses in `ALLOWED_EMAILS` get in. The signed-in account is
+recorded on every approval, edit, rejection and block. A reviewer name sent by the browser is ignored, so nobody
+can act in someone else's name.
+
+| Variable | Meaning |
+|---|---|
+| `AUTH_MODE` | `google` (default) or `dev` (no sign-in; every request acts as `DEV_USER_EMAIL`) |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | OAuth client, type "Web application" |
+| `ALLOWED_EMAILS` | Comma-separated. `@company.com` allows a whole domain. Removing an address signs that person out on their next request |
+| `SESSION_SECRET` | Long random string that signs the session cookie (Render generates it) |
+| `PUBLIC_URL` | e.g. `http://127.0.0.1:8000`. Not needed on Render, which provides `RENDER_EXTERNAL_URL` |
+
+- **Fails closed.** Every `/api` route needs a signed-in user except `/api/health` and `/api/auth/*`, including
+  routes added later. With `AUTH_MODE=google` and a setting missing, the app refuses to start rather than run
+  without a login.
+- **Sessions.** A signed cookie lasts 8 hours. It is `HttpOnly` and `SameSite=Lax`, and `Secure` on HTTPS.
+- **Google's answer is checked.** The app checks the `state` and `nonce`, then the token's issuer, audience,
+  expiry and verified email.
+
+Google Cloud setup (about 10 minutes, once):
+
+1. In Google Cloud console → **APIs & Services** → **OAuth consent screen**, choose **External** and fill in
+   the app name and your email. The scopes are only `openid`, `email` and `profile`, so no Google review is
+   needed.
+2. In **Credentials**, create an **OAuth client ID** of type **Web application**. Add these authorised redirect
+   URIs:
+   - `http://127.0.0.1:8000/api/auth/google/callback` (local testing)
+   - `https://<your-service>.onrender.com/api/auth/google/callback`
+3. To test sign-in locally, put `AUTH_MODE=google`, the client ID and secret, `ALLOWED_EMAILS`, a
+   `SESSION_SECRET` and `PUBLIC_URL=http://127.0.0.1:8000` in `.env`.
+
+The same Google project can later hold the Gmail API for the Gmail import (TODO section 5).
+
+## Deploy to Render
+
+`render.yaml` describes the whole deployment: a free Docker web service with the embedded worker, and a free
+Postgres in the same region.
+
+1. In Render, choose **New** → **Blueprint**, connect the GitHub repo, and apply `render.yaml`.
+2. When asked, enter `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAILS`, `GEMINI_API_KEY` and
+   optionally `OPENROUTER_API_KEY`. `SESSION_SECRET` and `DATABASE_URL` are filled in automatically.
+3. Add the service URL's callback to the Google OAuth client (step 2 above).
+
+After that, a push to `master` deploys once the CI checks pass. Migrations run at startup.
+
+What the free tier means:
+
+- **Sleeping.** The service sleeps after 15 idle minutes, and the first request then takes about a minute.
+- **Runs.** A run in progress keeps the service awake while the UI is open and polling. If the service sleeps
+  mid-run anyway, the job is resumed on the next start, as described in "Runs survive restarts".
+- **Database expiry.** Render's free Postgres expires after 30 days. Upgrade it, or export first, if the pilot
+  runs longer.
+- **Cache.** The model-output cache is on the container's disk, so it is lost on every deploy.
+- **Data.** Synthetic data only, until a paid AI API with no-training terms is in place.
 
 ## Runs survive restarts (job table)
 
@@ -190,6 +250,9 @@ The prompt fixed the drafts; the bigger models didn't help. Gemini Pro models ha
 | `inbox_helper/api.py`, `server.py` | FastAPI: runs, items, review actions, export, audit, health |
 | `inbox_helper/db.py` | SQLAlchemy models: runs, jobs, items, review_events, blocked_senders |
 | `inbox_helper/worker.py` | Job worker: claim, heartbeat, resume, fencing |
+| `inbox_helper/auth.py` | Google sign-in, allowed-email list, session, login-required middleware |
+| `inbox_helper/redact.py` | Hides identifiers from the AI |
+| `render.yaml` | Render blueprint: web service + Postgres |
 | `inbox_helper/migrations/` | Alembic migrations (schema and data fixes) |
 | `inbox_helper/pipeline.py` | Lane scheduler, retries, cache, result records |
 | `inbox_helper/checks.py` | Output parsing, label validation, draft checks |
@@ -230,7 +293,8 @@ On that run:
 
 ## Known limitations
 
-- There's no authentication. The reviewer name is typed in and stored in the browser.
+- There is one role: every allowed reviewer can do everything, including unblocking senders. There are no
+  admin or read-only accounts.
 - The model-output cache is a JSON file per worker (`.cache/`). It is lost when a container is replaced. That
   only costs repeat API calls, and resumed runs skip finished messages anyway.
 - Social engineering without injection phrases isn't detected as manipulation. Example: M045, "this is Sarah from

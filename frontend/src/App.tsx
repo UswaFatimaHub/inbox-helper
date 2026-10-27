@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Ban, CheckCircle2, ChevronDown, Clock3, Inbox, Loader2, MousePointerClick, XCircle } from "lucide-react";
-import { api } from "./api";
+import { AlertCircle, Ban, CheckCircle2, ChevronDown, Clock3, Inbox, Loader2, LogIn, MousePointerClick, ShieldCheck, XCircle } from "lucide-react";
+import { api, SignedOutError } from "./api";
 import { BlocklistDialog } from "./components/BlocklistDialog";
 import { DetailPanel, type Action } from "./components/DetailPanel";
 import { Header } from "./components/Header";
@@ -9,17 +9,7 @@ import { NewRunDialog, NewRunPanel } from "./components/NewRunDialog";
 import { Sidebar, type Group } from "./components/Sidebar";
 import { cx } from "./components/ui";
 import { INTENT_LABELS, intentLabel } from "./lib/labels";
-import type { BlockedSender, Item, Meta, Run } from "./types";
-
-const REVIEWER_KEY = "inbox-helper.reviewer";
-
-function readReviewer() {
-  try {
-    return localStorage.getItem(REVIEWER_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
+import type { BlockedSender, Item, Me, Meta, Run } from "./types";
 
 export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null);
@@ -31,7 +21,9 @@ export default function App() {
   const [group, setGroup] = useState<Group>("all");
   const [status, setStatus] = useState<StatusFilter>("pending");
   const [query, setQuery] = useState("");
-  const [reviewer, setReviewer] = useState(readReviewer);
+  const [user, setUser] = useState<Me | null>(null);
+  const [signedOut, setSignedOut] = useState(false);
+  const reviewer = user?.name ?? "";
   const [dialog, setDialog] = useState(false);
   const [blocked, setBlocked] = useState<BlockedSender[]>([]);
   const [blocklistOpen, setBlocklistOpen] = useState(false);
@@ -46,27 +38,33 @@ export default function App() {
     toastTimer.current = window.setTimeout(() => setToast(null), 2600);
   }, []);
 
-  const updateReviewer = (name: string) => {
-    setReviewer(name);
-    try {
-      localStorage.setItem(REVIEWER_KEY, name);
-    } catch {
-      /* storage unavailable: name lasts for this session only */
-    }
+  // any API call that gets a 401 (session expired, removed from the allowed list) shows the sign-in screen
+  useEffect(() => {
+    const onSignedOut = () => setSignedOut(true);
+    window.addEventListener("signed-out", onSignedOut);
+    return () => window.removeEventListener("signed-out", onSignedOut);
+  }, []);
+
+  const signOut = async () => {
+    await api.logout();
+    setSignedOut(true);
   };
 
   // initial load; ?run=&item= deep-link to a message
   const linkedItem = useRef<number | null>(Number(new URLSearchParams(location.search).get("item")) || null);
   useEffect(() => {
-    Promise.all([api.meta(), api.runs(), api.blocked()])
-      .then(([m, r, b]) => {
+    Promise.all([api.me(), api.meta(), api.runs(), api.blocked()])
+      .then(([u, m, r, b]) => {
+        setUser(u);
         setMeta(m);
         setRuns(r);
         setBlocked(b);
         const linked = Number(new URLSearchParams(location.search).get("run"));
         if (r.length) setRunId(r.some((x) => x.id === linked) ? linked : r[0].id);
       })
-      .catch((e) => setLoadError((e as Error).message));
+      .catch((e) => {
+        if (!(e instanceof SignedOutError)) setLoadError((e as Error).message);
+      });
   }, []);
 
   useEffect(() => {
@@ -171,7 +169,7 @@ export default function App() {
 
   const unblock = async (email: string) => {
     try {
-      await api.unblock(email, reviewer);
+      await api.unblock(email);
       setBlocked(await api.blocked());
       if (detail) setDetail(await api.item(detail.id));
       notify(`${email} unblocked`);
@@ -186,10 +184,10 @@ export default function App() {
     try {
       const updated =
         action === "regenerate"
-          ? await api.regenerate(detail.id, reviewer)
+          ? await api.regenerate(detail.id)
           : action === "block"
-            ? await api.block(detail.id, reviewer, payload?.note)
-            : await api.review(detail.id, { action, reviewer, ...payload });
+            ? await api.block(detail.id, payload?.note)
+            : await api.review(detail.id, { action, ...payload });
       if (action === "block") {
         // blocking closes every pending message from this sender, so reload the list and the blocklist
         setBlocked(await api.blocked());
@@ -247,14 +245,16 @@ export default function App() {
     );
   }
 
+  if (signedOut) return <SignIn />;
+
   return (
     <div className="flex h-full flex-col overflow-x-hidden">
       <Header
         runs={runs ?? []}
         runId={runId}
         onSelectRun={setRunId}
-        reviewer={reviewer}
-        onReviewer={updateReviewer}
+        user={user}
+        onSignOut={signOut}
         onNewRun={() => setDialog(true)}
       />
 
@@ -452,6 +452,29 @@ function Stat({ icon, label, value }: { icon: React.ReactNode; label: string; va
       {icon}
       <span className="text-lg font-semibold tabular-nums">{value}</span>
       <span className="text-xs text-slate-500">{label}</span>
+    </div>
+  );
+}
+
+function SignIn() {
+  return (
+    <div className="grid h-full place-items-center p-4">
+      <div className="flex w-full max-w-sm flex-col items-center gap-5 rounded-2xl bg-white p-8 text-center shadow-sm ring-1 ring-slate-200">
+        <div className="grid size-11 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-md shadow-indigo-500/25">
+          <ShieldCheck className="size-6" strokeWidth={2.2} />
+        </div>
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight">Inbox Helper</h1>
+          <p className="mt-1 text-sm text-slate-500">Sign in with the Google account your team added to the reviewer list.</p>
+        </div>
+        <a
+          href={api.loginUrl}
+          className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white hover:bg-indigo-500"
+        >
+          <LogIn className="size-4" /> Sign in with Google
+        </a>
+        <p className="text-xs text-slate-400">Your account is recorded on every approval, edit and rejection.</p>
+      </div>
     </div>
   );
 }

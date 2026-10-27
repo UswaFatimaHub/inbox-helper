@@ -11,6 +11,8 @@ from inbox_helper.pipeline import Lane
 from inbox_helper.providers import Completion, RateLimiter
 from inbox_helper.worker import Worker
 
+from conftest import REVIEWER
+
 
 class EchoClient:
     """Classifies everything as application_status with a harmless draft."""
@@ -79,14 +81,14 @@ def first_item(client):
 def test_edit_approve_reopen_reject_are_audited(client):
     run_id, item = first_item(client)
     url = f"/api/items/{item['id']}/review"
-    r = client.post(url, json={"action": "save", "reviewer": "Uswa", "text": "Edited reply"}).json()
+    r = client.post(url, json={"action": "save", "text": "Edited reply"}).json()
     assert r["final_reply"] == "Edited reply" and r["review_status"] == "pending"
-    r = client.post(url, json={"action": "approve", "reviewer": "Uswa", "text": "Edited reply"}).json()
-    assert r["review_status"] == "approved" and r["reviewed_by"] == "Uswa"
+    r = client.post(url, json={"action": "approve", "text": "Edited reply"}).json()
+    assert r["review_status"] == "approved" and r["reviewed_by"] == REVIEWER
     # approved items are locked until reopened
-    assert client.post(url, json={"action": "save", "reviewer": "Uswa", "text": "x"}).status_code == 409
-    client.post(url, json={"action": "reopen", "reviewer": "Uswa"})
-    r = client.post(url, json={"action": "reject", "reviewer": "Uswa", "note": "Wrong tone"}).json()
+    assert client.post(url, json={"action": "save", "text": "x"}).status_code == 409
+    client.post(url, json={"action": "reopen"})
+    r = client.post(url, json={"action": "reject", "note": "Wrong tone"}).json()
     assert r["review_status"] == "rejected" and r["review_note"] == "Wrong tone"
     assert [e["action"] for e in r["events"]] == ["edited", "approved", "reopened", "rejected"]
     assert r["events"][0]["before_text"] == item["draft_reply"]
@@ -94,23 +96,22 @@ def test_edit_approve_reopen_reject_are_audited(client):
     assert "Edited reply" not in client.get(f"/api/runs/{run_id}/export.csv").text
 
 
-def test_approve_requires_text_and_reviewer(client):
+def test_approve_requires_text(client):
     _, item = first_item(client)
     url = f"/api/items/{item['id']}/review"
-    assert client.post(url, json={"action": "approve", "reviewer": "Uswa", "text": "  "}).status_code == 400
-    assert client.post(url, json={"action": "approve", "reviewer": "", "text": "Hi"}).status_code == 422
+    assert client.post(url, json={"action": "approve", "text": "  "}).status_code == 400
 
 
 def test_export_lists_approved_replies(client):
     run_id, item = first_item(client)
-    client.post(f"/api/items/{item['id']}/review", json={"action": "approve", "reviewer": "Uswa", "text": "Final text"})
+    client.post(f"/api/items/{item['id']}/review", json={"action": "approve", "text": "Final text"})
     csv_text = client.get(f"/api/runs/{run_id}/export.csv").text
     assert "Final text" in csv_text and csv_text.count("\n") == 2
 
 
 def test_regenerate_replaces_draft_and_logs_event(client):
     _, item = first_item(client)
-    r = client.post(f"/api/items/{item['id']}/regenerate?reviewer=Uswa").json()
+    r = client.post(f"/api/items/{item['id']}/regenerate").json()
     assert r["draft_reply"] and r["events"][-1]["action"] == "regenerated"
 
 
@@ -144,8 +145,8 @@ def test_retry_only_applies_to_failed_runs(client):
 
 
 def test_there_is_no_send_endpoint(client):
-    paths = {route.path for route in client.app.routes}
-    assert not any("send" in p for p in paths)
+    paths = set(client.app.openapi()["paths"])  # every route, including included routers (auth)
+    assert "/api/auth/google/callback" in paths and not any("send" in p for p in paths)
 
 
 def item_by_mid(client, run_id, mid):
@@ -168,7 +169,7 @@ def test_block_sender_closes_their_pending_messages_and_skips_future_ones(client
     run1 = upload()
     wait_done(client, run1)
     a1 = item_by_mid(client, run1, "A1")
-    r = client.post(f"/api/items/{a1['id']}/block", json={"reviewer": "Uswa", "reason": "prompt injection"}).json()
+    r = client.post(f"/api/items/{a1['id']}/block", json={"reason": "prompt injection"}).json()
     assert r["review_status"] == "blocked" and r["events"][-1]["action"] == "blocked"
     assert item_by_mid(client, run1, "A2")["review_status"] == "blocked"   # other pending message from same sender
     assert item_by_mid(client, run1, "C1")["review_status"] == "pending"
@@ -179,7 +180,7 @@ def test_block_sender_closes_their_pending_messages_and_skips_future_ones(client
     assert item_by_mid(client, run2, "A2")["intent"] == "blocked_sender"
     assert item_by_mid(client, run2, "C1")["intent"] == "application_status"
 
-    assert client.delete("/api/blocked/amna@example.com?reviewer=Uswa").status_code == 200
+    assert client.delete("/api/blocked/amna@example.com").status_code == 200
     run3 = upload()
     wait_done(client, run3)
     assert item_by_mid(client, run3, "A2")["intent"] == "application_status"
@@ -189,7 +190,7 @@ def test_block_requires_an_email(client):
     run_id = client.post("/api/runs", files={"file": ("m.csv", b"message_id,body\nN1,Hello\n", "text/csv")}).json()["id"]
     wait_done(client, run_id)
     item = item_by_mid(client, run_id, "N1")
-    r = client.post(f"/api/items/{item['id']}/block", json={"reviewer": "Uswa"})
+    r = client.post(f"/api/items/{item['id']}/block", json={})
     assert r.status_code == 400 and "no sender email" in r.json()["detail"]
 
 
@@ -197,6 +198,6 @@ def test_reopen_a_blocked_item(client):
     run_id = client.post("/api/runs/sample").json()["id"]
     wait_done(client, run_id)
     m027 = item_by_mid(client, run_id, "M027")
-    client.post(f"/api/items/{m027['id']}/block", json={"reviewer": "Uswa"})
-    r = client.post(f"/api/items/{m027['id']}/review", json={"action": "reopen", "reviewer": "Uswa"}).json()
+    client.post(f"/api/items/{m027['id']}/block", json={})
+    r = client.post(f"/api/items/{m027['id']}/review", json={"action": "reopen"}).json()
     assert r["review_status"] == "pending"

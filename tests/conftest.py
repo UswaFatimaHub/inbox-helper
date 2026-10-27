@@ -7,6 +7,15 @@ from sqlalchemy import create_engine, text
 
 from inbox_helper.db import Database, database_url
 
+REVIEWER = "uswa@example.com"
+
+
+@pytest.fixture(autouse=True)
+def dev_sign_in(monkeypatch):
+    """Apps built in tests act as one signed-in reviewer; test_auth.py covers the Google sign-in itself."""
+    monkeypatch.setenv("AUTH_MODE", "dev")
+    monkeypatch.setenv("DEV_USER_EMAIL", REVIEWER)
+
 
 def reset_postgres(url: str) -> None:
     engine = create_engine(database_url(url))
