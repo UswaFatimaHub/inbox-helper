@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, Download, Loader2, LogIn, MousePointerClick, Sparkles, X } from "lucide-react";
+import {
+  AlertCircle, AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, Download, Keyboard, Loader2, LogIn, MousePointerClick,
+  Sparkles, X,
+} from "lucide-react";
 import { api, SignedOutError } from "./api";
 import { BlocklistDialog } from "./components/BlocklistDialog";
+import { SignatureDialog } from "./components/SignatureDialog";
 import { DetailPanel, NO_REPLY_NOTE, type Action } from "./components/DetailPanel";
 import { MessageList, type StatusFilter } from "./components/MessageList";
 import { LogoMark, Shell, type Page } from "./components/Shell";
@@ -37,15 +41,17 @@ export default function App() {
   const [gmail, setGmail] = useState<GmailStatus | null>(null);
   const [blocked, setBlocked] = useState<BlockedSender[]>([]);
   const [blocklistOpen, setBlocklistOpen] = useState(false);
-  const [toast, setToast] = useState<{ msg: string; tone: "ok" | "error" } | null>(null);
+  const [signatureOpen, setSignatureOpen] = useState(false);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const [shortcuts, setShortcuts] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [finished, setFinished] = useState<{ count: number; seconds: number } | null>(null); // drafting just ended
   const toastTimer = useRef<number | undefined>(undefined);
 
-  const notify = useCallback((msg: string, tone: "ok" | "error" = "ok") => {
-    setToast({ msg, tone });
+  const notify = useCallback((msg: string, tone: "ok" | "error" = "ok", action?: Toast["action"]) => {
+    setToast({ msg, tone, action });
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
+    toastTimer.current = window.setTimeout(() => setToast(null), action ? 5000 : 3200);
   }, []);
 
   // any API call that gets a 401 (session expired, removed from the allowed list) shows the sign-in screen
@@ -180,12 +186,15 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || e.metaKey || e.ctrlKey) return;
-      if (e.key === "j") go(1);
-      if (e.key === "k") go(-1);
+      if (e.key === "?") setShortcuts((v) => !v);
+      else if (e.key === "Escape") setShortcuts(false);
+      else if (shortcuts) return;
+      else if (e.key === "j") go(1);
+      else if (e.key === "k") go(-1);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, page]);
+  }, [go, page, shortcuts]);
 
   const unblock = async (email: string) => {
     try {
@@ -226,7 +235,10 @@ export default function App() {
         regenerate: "New draft ready", block: `Blocked ${updated.candidate_email}`, unblock: "", draft: "Gmail draft created",
       };
       if (gm?.draft_error && (action === "approve" || action === "reopen" || action === "draft")) {
-        notify(action === "approve" ? `Approved, but the Gmail draft failed: ${gm.draft_error}` : gm.draft_error, "error");
+        notify(action === "approve" ? `Approved, but the Gmail draft failed: ${gm.draft_error}` : gm.draft_error, "error",
+          action === "approve" ? { label: "Undo", run: () => undo(updated.id) } : undefined);
+      } else if (action === "approve" || action === "reject") {
+        notify(messages[action], "ok", { label: "Undo", run: () => undo(updated.id) });
       } else {
         notify(messages[action]);
       }
@@ -236,6 +248,20 @@ export default function App() {
         const after = rest.find((i) => visible.indexOf(i) > index) ?? rest[0];
         if (after && status === "pending") setSelectedId(after.id);
       }
+    } catch (e) {
+      notify((e as Error).message, "error");
+    }
+  };
+
+  /** Undo an approve or reject: the message goes back to "to review" (and its Gmail draft is deleted). */
+  const undo = async (id: number) => {
+    setToast(null);
+    try {
+      const back = await api.review(id, { action: "reopen" });
+      setItems((prev) => prev?.map((i) => (i.id === id ? { ...back, events: undefined } : i)) ?? null);
+      setSelectedId(id);
+      setDetail(back);
+      notify("Undone · back in the queue");
     } catch (e) {
       notify((e as Error).message, "error");
     }
@@ -280,7 +306,7 @@ export default function App() {
 
   const banners = (
     <>
-      {active.length > 0 && <Drafting runs={active} />}
+      {active.length > 0 && <Drafting runs={active} onReview={() => openQueue({ group: "all", status: "pending" })} />}
       {finished && !active.length && <ReadyBanner {...finished} onReview={() => openQueue({ group: "all", status: "pending" })} onClose={() => setFinished(null)} />}
       {latestFailed && !active.length && (
         <div className="flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-800">
@@ -321,11 +347,11 @@ export default function App() {
       <Shell
         page={page}
         onPage={(p) => (p === "review" ? openQueue({ group: "all", status: "pending" }) : setPage(p))}
-        canReview
         toReview={statusCounts.pending}
         groups={<Groups items={byStatus} intents={intents} systemIntents={systemIntents} group={group} onGroup={chooseGroup} />}
         blockedCount={blocked.length}
         onBlocklist={() => setBlocklistOpen(true)}
+        onSignature={() => setSignatureOpen(true)}
         gmail={gmail}
         user={user}
         onSignOut={signOut}
@@ -342,9 +368,11 @@ export default function App() {
           />
         ) : (
           <div className="flex h-full flex-col">
+            <div className={cx(detail && "hidden lg:block")}>
             <QueueBar counts={statusCounts} attention={all.filter((i) => i.priority_review && i.review_status === "pending").length}
-              onAttention={() => openQueue({ group: "attention", status: "pending" })} />
+              onAttention={() => openQueue({ group: "attention", status: "pending" })} onShortcuts={() => setShortcuts(true)} />
             {(active.length > 0 || finished || latestFailed) && <div className="space-y-2 border-b border-slate-200/80 px-4 py-3 lg:px-6">{banners}</div>}
+            </div>
             <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[380px_1fr]">
               <section className={cx("min-h-0 flex-col border-r border-slate-200/80 bg-white/60", detail ? "hidden lg:flex" : "flex")}>
                 <div className="border-b border-slate-200/80 p-3 lg:hidden">
@@ -410,6 +438,16 @@ export default function App() {
         )}
       </Shell>
 
+      <SignatureDialog
+        open={signatureOpen}
+        onClose={() => setSignatureOpen(false)}
+        onSaved={async () => {
+          // drafts are shown with the reviewer's signature, so fetch them again
+          await reload();
+          if (selectedId != null) setDetail(await api.item(selectedId));
+          notify("Signature saved · drafts updated");
+        }}
+      />
       <BlocklistDialog
         open={blocklistOpen}
         blocked={blocked}
@@ -419,19 +457,83 @@ export default function App() {
       />
 
       {toast && (
-        <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-4">
+        <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-4" role="status" aria-live="polite">
           <div
             className={cx(
-              "animate-toast flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium text-white shadow-lg",
-              toast.tone === "ok" ? "bg-slate-900" : "bg-rose-600",
+              "animate-toast pointer-events-auto flex items-center gap-2 rounded-xl py-2.5 pr-2.5 pl-4 text-sm font-medium shadow-lg",
+              toast.tone === "ok" ? "bg-slate-900 text-slate-50" : "bg-rose-600 text-on-accent",
             )}
           >
             {toast.tone === "ok" ? <CheckCircle2 className="size-4 text-emerald-400" /> : <AlertCircle className="size-4" />}
-            {toast.msg}
+            <span className="pr-1.5">{toast.msg}</span>
+            {toast.action && (
+              <button
+                onClick={toast.action.run}
+                className="rounded-md px-2 py-0.5 font-semibold text-indigo-300 ring-1 ring-slate-600 hover:bg-slate-800 hover:text-indigo-200"
+              >
+                {toast.action.label}
+              </button>
+            )}
           </div>
         </div>
       )}
+
+      {shortcuts && <Shortcuts onClose={() => setShortcuts(false)} />}
     </>
+  );
+}
+
+type Toast = { msg: string; tone: "ok" | "error"; action?: { label: string; run: () => void } };
+
+const SHORTCUTS: [string[], string][] = [
+  [["J"], "Next message"],
+  [["K"], "Previous message"],
+  [["A"], "Approve the reply"],
+  [["Ctrl", "Enter"], "Approve while typing in the reply"],
+  [["R"], "Reject (asks for an optional reason). On a no-reply or quarantined message: close it"],
+  [["E"], "Edit the reply (also writes one for a no-reply or quarantined message)"],
+  [["Esc"], "Cancel the reject box, close this list"],
+  [["?"], "Show or hide this list"],
+];
+
+/** "?" overlay: every keyboard shortcut of the review queue. */
+function Shortcuts({ onClose }: { onClose: () => void }) {
+  return (
+    <div data-overlay className="fixed inset-0 z-50 grid place-items-center bg-slate-900/30 p-4 backdrop-blur-sm" onMouseDown={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="shortcuts-title"
+        onMouseDown={(e) => e.stopPropagation()}
+        className="card corners w-full max-w-md p-6 shadow-pop"
+      >
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <p className="microlabel !text-indigo-500/80">Review queue</p>
+            <h2 id="shortcuts-title" className="mt-1 text-lg font-semibold tracking-tight">Keyboard shortcuts</h2>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+            <X className="size-5" />
+          </button>
+        </div>
+        <dl className="divide-y divide-slate-100">
+          {SHORTCUTS.map(([keys, what]) => (
+            <div key={what} className="flex items-start gap-4 py-2.5">
+              <dt className="flex w-28 shrink-0 flex-wrap items-center gap-1">
+                {keys.map((k, i) => (
+                  <span key={k} className="flex items-center gap-1">
+                    {i > 0 && <span className="text-xs text-slate-400">+</span>}
+                    <Kbd>{k}</Kbd>
+                  </span>
+                ))}
+              </dt>
+              <dd className="text-sm text-slate-600">{what}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="mt-4 text-xs text-slate-500">Shortcuts pause while you type in a box. Approve and reject can be undone from the message that pops up.</p>
+      </div>
+    </div>
   );
 }
 
@@ -440,24 +542,29 @@ function Kbd({ children }: { children: React.ReactNode }) {
 }
 
 /** Top of the queue: how much of it is reviewed, what needs attention, and the export. */
-function QueueBar({ counts, attention, onAttention }: {
+function QueueBar({ counts, attention, onAttention, onShortcuts }: {
   counts: Record<StatusFilter, number>;
   attention: number;
   onAttention: () => void;
+  onShortcuts: () => void;
 }) {
   const reviewed = counts.approved + counts.rejected + counts.blocked;
   const share = (n: number) => `${counts.all ? (n / counts.all) * 100 : 0}%`;
 
   return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-slate-200/80 bg-white/75 px-4 py-3 backdrop-blur-sm lg:px-6">
+    <div className="relative z-20 flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-slate-200/80 bg-white/75 px-4 py-3 backdrop-blur-sm lg:px-6">
       <div className="min-w-0">
         <p className="microlabel">Candidate inbox</p>
         <p className="text-[15px] font-semibold tracking-tight text-slate-900">
-          Review queue <span className="font-normal text-slate-400">· {counts.pending} waiting · {counts.all} in total</span>
+          Review queue <span className="font-normal text-slate-400">· {counts.pending} waiting<span className="hidden sm:inline"> · {counts.all} in total</span></span>
         </p>
       </div>
       <div className="ml-auto flex items-center gap-3">
-        <div className="hidden w-48 items-center gap-2 xl:flex" title={`${counts.approved} approved · ${counts.rejected} closed · ${counts.blocked} blocked · ${counts.pending} to review`}>
+        <div
+          tabIndex={0}
+          aria-label={`${reviewed} of ${counts.all} reviewed. Hover or focus for the breakdown.`}
+          className="group relative hidden w-48 cursor-default items-center gap-2 rounded-md py-1 md:flex"
+        >
           <div className="flex h-1.5 flex-1 gap-px overflow-hidden rounded-full bg-slate-100">
             <div className="bg-emerald-500 transition-all duration-500" style={{ width: share(counts.approved) }} />
             <div className="bg-rose-300 transition-all duration-500" style={{ width: share(counts.rejected) }} />
@@ -466,18 +573,43 @@ function QueueBar({ counts, attention, onAttention }: {
           <span className="font-mono text-xs whitespace-nowrap text-slate-500 tabular-nums">
             {reviewed}/{counts.all}
           </span>
+          <div className="card invisible absolute top-full right-0 z-30 mt-2 w-80 !bg-white p-4 opacity-0 shadow-pop transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
+            <div className="flex items-baseline justify-between">
+              <p className="microlabel">Review progress</p>
+              <span className="font-mono text-xs text-slate-500 tabular-nums">{reviewed} of {counts.all} done</span>
+            </div>
+            <ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+              {([["Approved", counts.approved, "bg-emerald-500"], ["Closed", counts.rejected, "bg-rose-300"],
+                 ["Blocked", counts.blocked, "bg-zinc-500"], ["To review", counts.pending, "bg-slate-200"]] as const).map(([label, n, swatch]) => (
+                <li key={label} className="flex items-center gap-2">
+                  <span className={cx("size-2.5 rounded-sm", swatch)} />
+                  <span className="flex-1 truncate text-slate-600">{label}</span>
+                  <span className="font-mono text-slate-800 tabular-nums">{n}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
         {attention > 0 && (
           <button
             onClick={onAttention}
             className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-100"
           >
-            <AlertTriangle className="size-3.5" /> {attention} need attention
+            <AlertTriangle className="size-3.5" /> {attention}<span className="hidden sm:inline"> need attention</span>
           </button>
         )}
+        <button
+          onClick={onShortcuts}
+          title="Keyboard shortcuts (?)"
+          aria-label="Keyboard shortcuts"
+          className="hidden size-8 place-items-center rounded-lg text-slate-500 ring-1 ring-slate-200 hover:bg-white hover:text-slate-900 md:grid"
+        >
+          <Keyboard className="size-4" />
+        </button>
         <a
           href={api.exportUrl}
           title="Download every approved reply as CSV"
+          aria-label="Export approved replies as CSV"
           className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium text-slate-600 ring-1 ring-slate-200 hover:bg-white hover:text-slate-900"
         >
           <Download className="size-3.5" /> <span className="hidden sm:inline">Export approved</span>
@@ -494,7 +626,7 @@ const STEPS = [
 ] as const;
 
 /** While the AI works on new messages: stage, how far along, time taken and roughly how long is left. */
-function Drafting({ runs }: { runs: Run[] }) {
+function Drafting({ runs, onReview }: { runs: Run[]; onReview: () => void }) {
   const now = useNow(true);
   const total = runs.reduce((n, r) => n + r.total, 0);
   const processed = runs.reduce((n, r) => n + r.processed, 0);
@@ -506,6 +638,9 @@ function Drafting({ runs }: { runs: Run[] }) {
   // estimate only once a few drafts are in; batches arrive in bursts, so earlier guesses swing wildly
   const left = processed >= 3 && processed < total ? ((total - processed) * elapsed) / processed : null;
   const step = queued ? 0 : 1;
+  const sorted = new Map<string, number>();
+  for (const r of runs) for (const [intent, n] of Object.entries(r.by_intent)) sorted.set(intent, (sorted.get(intent) ?? 0) + n);
+  const tally = [...sorted.entries()].sort((a, b) => b[1] - a[1]);
 
   return (
     <div className="card p-4" aria-live="polite">
@@ -543,13 +678,33 @@ function Drafting({ runs }: { runs: Run[] }) {
           {left != null && <span className="text-slate-400"> · ~{formatDuration(left)} left</span>}
         </div>
       </div>
-      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100">
+      <div
+        className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100"
+        role="progressbar"
+        aria-label="Drafting progress"
+        aria-valuemin={0}
+        aria-valuemax={total}
+        aria-valuenow={processed}
+      >
         {queued || processed === 0 ? (
           <div className="animate-indeterminate h-full w-2/5 rounded-full bg-indigo-400" />
         ) : (
           <div className="h-full rounded-full bg-indigo-500 transition-all duration-700" style={{ width: `${(processed / total) * 100}%` }} />
         )}
       </div>
+      {processed > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-3">
+          <span className="microlabel mr-1 hidden sm:inline">Sorted so far</span>
+          {tally.map(([intent, n]) => (
+            <span key={intent} className="hidden sm:inline-flex items-center gap-1.5 rounded-md bg-white px-1.5 py-0.5 text-xs text-slate-600 ring-1 ring-slate-200 ring-inset">
+              {intentLabel(intent)} <span className="font-mono text-slate-800 tabular-nums">{n}</span>
+            </span>
+          ))}
+          <button onClick={onReview} className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:underline">
+            Review what's ready <ArrowRight className="size-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -585,7 +740,7 @@ function SignIn() {
         </div>
         <a
           href={api.loginUrl}
-          className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white shadow-sm shadow-indigo-600/20 hover:bg-indigo-500"
+          className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-on-accent shadow-sm shadow-indigo-600/20 hover:bg-indigo-500"
         >
           <LogIn className="size-4" /> Sign in with Google
         </a>

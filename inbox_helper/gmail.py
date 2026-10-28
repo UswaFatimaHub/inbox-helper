@@ -57,6 +57,13 @@ MAX_LIST_PAGES = 10   # pages of 100 ids scanned per fetch while skipping messag
 DOWNLOAD_THREADS = 8  # parallel message downloads; well inside Gmail's per-user quota (messages.get = 5 units)
 
 
+# One kept-alive connection pool for every Google call. A new HTTPS connection costs ~0.4-0.9 s (TLS handshake);
+# reusing one costs ~0.15 s, and approving a reply makes up to three calls in a row. Big enough for the parallel
+# downloads of a fetch. urllib3's pool is thread-safe.
+_http = requests.Session()
+_http.mount("https://", requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=16))
+
+
 class GmailError(Exception):
     """A Gmail step failed. reconnect=True: there is no usable connection; a reviewer has to connect Gmail again."""
 
@@ -130,7 +137,7 @@ class Mailbox:
 
     def _call(self, method: str, path: str, missing_ok: bool = False, **kwargs) -> dict:
         try:
-            r = requests.request(method, GMAIL_API + path, headers=self.headers, timeout=20, **kwargs)
+            r = _http.request(method, GMAIL_API + path, headers=self.headers, timeout=20, **kwargs)
         except requests.RequestException as e:
             raise GmailError(f"Gmail could not be reached ({e.__class__.__name__}). Try again.") from None
         if r.status_code == 404 and missing_ok:
@@ -170,7 +177,7 @@ class GoogleApi:
 
     def _token(self, config: GmailConfig, data: dict) -> dict:
         try:
-            r = requests.post(GOOGLE_TOKEN_URL, timeout=10,
+            r = _http.post(GOOGLE_TOKEN_URL, timeout=10,
                               data={"client_id": config.client_id, "client_secret": config.client_secret, **data})
         except requests.RequestException as e:
             raise GmailError(f"Google could not be reached ({e.__class__.__name__}). Try again.") from None
@@ -193,7 +200,7 @@ class GoogleApi:
 
     def revoke(self, token: str) -> None:
         try:
-            requests.post(REVOKE_URL, data={"token": token}, timeout=10)
+            _http.post(REVOKE_URL, data={"token": token}, timeout=10)
         except requests.RequestException:
             pass  # best effort; the user can also remove access at myaccount.google.com/permissions
 

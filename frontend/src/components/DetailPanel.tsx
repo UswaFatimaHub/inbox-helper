@@ -1,16 +1,17 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, ArrowLeft, Ban, Check, ChevronDown, ChevronUp, Copy, History, Mail, MailX, RefreshCw, RotateCcw, Save,
-  ShieldAlert, Sparkles, Undo2, X,
+  AlertTriangle, ArrowLeft, Ban, Check, ChevronDown, ChevronUp, Copy, ExternalLink, History, Mail, MailX, RefreshCw,
+  RotateCcw, Save, ShieldAlert, Sparkles, Undo2, X,
 } from "lucide-react";
 import { flagSeverity, formatWhen, initials, shortModel } from "../lib/labels";
-import type { Item, Meta } from "../types";
+import { diffWords } from "../lib/diff";
+import type { Highlight, Item, Meta } from "../types";
 import { Button, Card, FlagChip, IntentChip, StatusPill, cx } from "./ui";
 
 /** Review note recorded when a reviewer agrees that a message needs no reply. */
 export const NO_REPLY_NOTE = "No reply needed";
 
-export type Action ="save" | "approve" | "reject" | "reopen" | "regenerate" | "block" | "unblock" | "draft";
+export type Action = "save" | "approve" | "reject" | "reopen" | "regenerate" | "block" | "unblock" | "draft";
 
 const SEVERITY_ORDER = { high: 0, attention: 1, info: 2 } as const;
 
@@ -29,6 +30,70 @@ const EVENT_TEXT: Record<string, string> = {
 };
 
 const gmailDraftsUrl = (mailbox: string) => `https://mail.google.com/mail/?authuser=${encodeURIComponent(mailbox)}#drafts`;
+export const gmailThreadUrl = (mailbox: string, threadId: string) =>
+  `https://mail.google.com/mail/?authuser=${encodeURIComponent(mailbox)}#all/${threadId}`;
+
+const QUARANTINE_NOTE = "Manipulation attempt: closed without reply";
+
+const HIDDEN_LABELS: Record<string, string> = {
+  EMAIL: "email address", IBAN: "IBAN", NATIONAL_ID: "national ID number", PASSPORT: "passport number",
+  CARD_NUMBER: "card number", PHONE: "phone number", NUMBER: "long number (account or ID)",
+};
+
+/** The message text with injection phrases and hidden identifiers marked, each explained on hover. */
+function MarkedText({ text, highlights }: { text: string; highlights: Highlight[] }) {
+  const parts: React.ReactNode[] = [];
+  let at = 0;
+  for (const h of highlights) {
+    if (h.start < at) continue; // overlaps the previous mark
+    parts.push(text.slice(at, h.start));
+    const injection = h.kind === "injection";
+    parts.push(
+      <mark
+        key={h.start}
+        title={injection ? "Known prompt-injection phrase: tries to instruct the AI" : `Hidden from the AI: ${HIDDEN_LABELS[h.kind] ?? h.kind}`}
+        className={cx(
+          "rounded px-0.5 text-inherit",
+          injection ? "bg-rose-100 underline decoration-rose-400 decoration-wavy underline-offset-4" : "bg-amber-100",
+        )}
+      >
+        {text.slice(h.start, h.end)}
+      </mark>,
+    );
+    at = h.end;
+  }
+  parts.push(text.slice(at));
+  return <>{parts}</>;
+}
+
+/** What the reviewer changed: removed words struck through, added words underlined. */
+function ChangeDiff({ before, after }: { before: string; after: string }) {
+  return (
+    <p className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap text-slate-600 ring-1 ring-slate-200" dir="auto">
+      {diffWords(before, after).map((d, i) =>
+        d.kind === "same" ? (
+          <span key={i}>{d.text}</span>
+        ) : d.kind === "removed" ? (
+          <del key={i} className="rounded bg-rose-100 px-0.5 text-rose-800 decoration-rose-500">{d.text}</del>
+        ) : (
+          <ins key={i} className="rounded bg-emerald-100 px-0.5 text-emerald-800 no-underline">{d.text}</ins>
+        ),
+      )}
+    </p>
+  );
+}
+
+function HistoryChange({ before, after }: { before: string; after: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-1">
+      <button onClick={() => setOpen((v) => !v)} aria-expanded={open} className="text-xs font-medium text-indigo-600 hover:underline">
+        {open ? "Hide changes" : "Show what changed"}
+      </button>
+      {open && <ChangeDiff before={before} after={after} />}
+    </div>
+  );
+}
 
 export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onBack, onPrev, onNext, notify }: {
   item: Item;
@@ -71,6 +136,39 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
   const email = item.candidate_email.trim().toLowerCase();
   const senderBlocked = !!email && blockedEmails.has(email);
 
+  const replyOpen = pending && ((!quarantined && !noReply) || writeAnyway);
+  const editor = useRef<HTMLTextAreaElement>(null);
+  const [focusEditor, setFocusEditor] = useState(0);
+  useEffect(() => {
+    if (!focusEditor || !editor.current) return;
+    editor.current.focus();
+    editor.current.setSelectionRange(editor.current.value.length, editor.current.value.length);
+  }, [focusEditor, writeAnyway]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.isContentEditable || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!pending || needName || busy || document.querySelector("[data-overlay]")) return;
+      const key = e.key.toLowerCase();
+      if (key === "a" && replyOpen && text.trim() && !rejecting) {
+        e.preventDefault();
+        run("approve", { text });
+      } else if (key === "r") {
+        e.preventDefault();
+        if (replyOpen) setRejecting(true);
+        else if (noReply) run("reject", { note: NO_REPLY_NOTE });
+        else if (quarantined) run("reject", { note: QUARANTINE_NOTE });
+      } else if (key === "e") {
+        e.preventDefault();
+        setWriteAnyway(true);
+        setFocusEditor((n) => n + 1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   const copy = async (value: string) => {
     await navigator.clipboard.writeText(value);
     notify("Reply copied to clipboard");
@@ -88,7 +186,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
             {initials(item.candidate_name || item.candidate_email)}
           </div>
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-x-2">
               <h2 className="truncate text-base font-semibold tracking-tight">{item.candidate_name || "Unknown sender"}</h2>
               <StatusPill status={item.review_status} />
             </div>
@@ -104,10 +202,21 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
             </div>
           </div>
           <div className="flex items-center gap-1">
-            <button onClick={onPrev} disabled={!onPrev} title="Previous (K)" className="rounded-lg p-1.5 text-slate-500 hover:bg-white disabled:opacity-30">
+            {item.gmail && (
+              <a
+                href={gmailThreadUrl(item.gmail.mailbox, item.gmail.thread_id)}
+                target="_blank"
+                rel="noreferrer"
+                title="Open this conversation in Gmail"
+                className="mr-1 hidden items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-500 ring-1 ring-slate-200 hover:bg-white hover:text-slate-800 sm:inline-flex"
+              >
+                <ExternalLink className="size-3.5" /> Gmail
+              </a>
+            )}
+            <button onClick={onPrev} disabled={!onPrev} title="Previous (K)" aria-label="Previous message" className="rounded-lg p-1.5 text-slate-500 hover:bg-white disabled:opacity-30">
               <ChevronUp className="size-5" />
             </button>
-            <button onClick={onNext} disabled={!onNext} title="Next (J)" className="rounded-lg p-1.5 text-slate-500 hover:bg-white disabled:opacity-30">
+            <button onClick={onNext} disabled={!onNext} title="Next (J)" aria-label="Next message" className="rounded-lg p-1.5 text-slate-500 hover:bg-white disabled:opacity-30">
               <ChevronDown className="size-5" />
             </button>
           </div>
@@ -138,7 +247,23 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
 
         <Card title="Candidate's message" icon={<Mail className="size-3.5" />}>
           <div className="text-[15px] font-semibold text-slate-900" dir="auto">{item.subject || "(no subject)"}</div>
-          <p className="mt-2 text-[15px] leading-relaxed whitespace-pre-wrap text-slate-700" dir="auto">{item.body}</p>
+          <p className="mt-2 text-[15px] leading-relaxed whitespace-pre-wrap text-slate-700" dir="auto">
+            <MarkedText text={item.body} highlights={item.highlights ?? []} />
+          </p>
+          {!!item.highlights?.length && (
+            <p className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-100 pt-3 text-xs text-slate-500">
+              {item.highlights.some((h) => h.kind === "injection") && (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-3 w-5 rounded-sm bg-rose-100 ring-1 ring-rose-300" /> Tries to instruct the AI
+                </span>
+              )}
+              {item.highlights.some((h) => h.kind !== "injection") && (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-3 w-5 rounded-sm bg-amber-100 ring-1 ring-amber-300" /> Personal data, hidden from the AI
+                </span>
+              )}
+            </p>
+          )}
         </Card>
 
         <Card
@@ -234,7 +359,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
                   variant="secondary"
                   disabled={needName || !!busy}
                   loading={busy === "reject"}
-                  onClick={() => run("reject", { note: "Manipulation attempt: closed without reply" })}
+                  onClick={() => run("reject", { note: QUARANTINE_NOTE })}
                 >
                   Dismiss, no reply
                 </Button>
@@ -285,7 +410,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
         )}
 
         {pending ? (
-          ((!quarantined && !noReply) || writeAnyway) && <Card
+          replyOpen && <Card
             title="Reply"
             actions={
               <div className="flex items-center gap-1">
@@ -311,6 +436,8 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
             }
           >
             <textarea
+              ref={editor}
+              aria-label="Reply"
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
@@ -326,7 +453,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
                 {words} words{editedFromAi && <span className="ml-2 rounded bg-indigo-50 px-1.5 py-0.5 text-indigo-600">edited by you</span>}
               </span>
               <span className="hidden sm:inline">
-                {item.gmail && "Approving saves a Gmail draft · "}Ctrl + Enter to approve
+                {item.gmail && "Approving saves a Gmail draft · "}A or Ctrl + Enter to approve · R to reject
               </span>
             </div>
 
@@ -338,7 +465,10 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
                   autoFocus
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && run("reject", { note })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") run("reject", { note });
+                    if (e.key === "Escape") setRejecting(false);
+                  }}
                   placeholder="e.g. needs a phone call instead, wrong tone…"
                   className="mt-2 h-9 w-full rounded-lg bg-white px-3 text-sm ring-1 ring-rose-200 ring-inset focus:ring-2 focus:ring-rose-400 focus:outline-none"
                 />
@@ -378,7 +508,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
           </Card>
         ) : item.review_status === "blocked" ? (
           <section className="rounded-2xl bg-zinc-900 px-5 py-4 text-sm text-zinc-300 shadow-sm">
-            <div className="flex items-center gap-2 font-semibold text-white">
+            <div className="flex items-center gap-2 font-semibold text-zinc-50">
               <Ban className="size-4" /> Sender blocked · not answered
             </div>
             <p className="mt-2">
@@ -392,7 +522,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
                 Reopen this message
               </Button>
               {senderBlocked && (
-                <Button size="sm" variant="ghost" className="text-zinc-300 hover:bg-zinc-800 hover:text-white" disabled={needName || !!busy} loading={busy === "unblock"} onClick={() => run("unblock")}>
+                <Button size="sm" variant="ghost" className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50" disabled={needName || !!busy} loading={busy === "unblock"} onClick={() => run("unblock")}>
                   Unblock sender
                 </Button>
               )}
@@ -430,7 +560,10 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
               item.gmail.draft_id && !item.gmail.draft_error ? (
                 <p className="mt-3 flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 ring-1 ring-slate-200">
                   <Mail className="size-3.5 text-rose-500" />
-                  Saved as a draft in {item.gmail.mailbox}, in the candidate's thread.
+                  <span>
+                    Saved as a draft in {item.gmail.mailbox}, in the candidate's thread.
+                    <span className="block text-slate-400">Gmail can take a few seconds to show it; reload Gmail if it is already open.</span>
+                  </span>
                   <a href={gmailDraftsUrl(item.gmail.mailbox)} target="_blank" rel="noreferrer" className="ml-auto font-medium text-indigo-600 hover:underline">
                     Open Gmail drafts
                   </a>
@@ -464,9 +597,8 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
                     <span className="ml-2 text-xs text-slate-400">{formatWhen(e.at)}</span>
                   </div>
                   {e.note && <div className="mt-0.5 text-xs text-slate-500">{e.note}</div>}
-                  {e.action === "approved" && e.before_text && e.after_text && e.before_text.trim() !== e.after_text.trim() && (
-                    <div className="mt-1 text-xs text-indigo-600">Reviewer changed the AI draft before approving</div>
-                  )}
+                  {(e.action === "approved" || e.action === "edited") && e.before_text && e.after_text &&
+                    e.before_text.trim() !== e.after_text.trim() && <HistoryChange before={e.before_text} after={e.after_text} />}
                 </li>
               ))}
             </ol>

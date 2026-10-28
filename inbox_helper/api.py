@@ -28,11 +28,14 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth import SESSION_MAX_AGE_S, AuthConfig, auth_router, exchange_code_with_google, require_login
 from .config import (ALL_INTENTS, CACHE_PATH, CODE_FLAGS, DEFAULT_LANES, DEFAULT_POLICY, DEFAULT_PROFILE, FLAGS,
                      PROMPT_VERSION, ROOT, SYSTEM_INTENTS)
-from .db import (ITEM_FIELDS, BlockedSender, Database, GmailMessage, Item, Job, ReviewEvent, Run, apply_result, iso,
-                 utcnow)
+from .db import (ITEM_FIELDS, BlockedSender, Database, GmailMessage, Item, Job, ReviewerSettings, ReviewEvent, Run,
+                 apply_result, iso, utcnow)
+from .checks import injection_spans
 from .gmail import GmailService, gmail_router
 from .loader import InputError, LoadResult, Message, load_messages
 from .pipeline import PRIORITY_FLAGS, Cache, Lane, TriageRun
+from .redact import find_identifiers
+from .reply import DEFAULT_GREETING, DEFAULT_SIGN_OFF, MAX_GREETING, MAX_SIGN_OFF, compose
 from .worker import Worker, blocked_emails, default_lanes, enqueue_run
 
 SAMPLE_INPUT = ROOT / "data" / "messages.csv"
@@ -49,6 +52,11 @@ class ReviewAction(BaseModel):
     action: Literal["save", "approve", "reject", "reopen"]
     text: str | None = None   # the reply as edited by the reviewer (save/approve)
     note: str | None = None   # reason for rejecting, optional
+
+
+class SignatureBody(BaseModel):
+    greeting: str | None = None   # one line; {first_name} becomes the sender's first name
+    sign_off: str | None = None   # up to 6 lines
 
 
 def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane]] = default_lanes,
@@ -89,9 +97,24 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             yield s
 
     # ---- serialization ----------------------------------------------------------------------------------------
-    def item_json(it: Item, events: bool = False, gm: GmailMessage | None = None) -> dict:
-        """gm: the Gmail message the item was imported from, if any (gmail.message_for)."""
+    def signature(s, request: Request) -> tuple[str | None, str | None]:
+        """The signed-in reviewer's greeting and sign-off; (None, None) means the defaults."""
+        row = s.get(ReviewerSettings, reviewer(request).lower())
+        return (row.greeting, row.sign_off) if row else (None, None)
+
+    def draft_for(it: Item, sig: tuple[str | None, str | None]) -> str:
+        """The AI draft as this reviewer sees it: their greeting and sign-off around what the AI wrote (English
+        replies; other languages get that language's greeting and sign-off)."""
+        if it.draft_body is None:  # made before the body was stored separately
+            return it.draft_reply
+        return compose(it.draft_body, it.candidate_name, *sig, language=it.language)
+
+    def item_json(it: Item, events: bool = False, gm: GmailMessage | None = None,
+                  sig: tuple[str | None, str | None] = (None, None)) -> dict:
+        """gm: the Gmail message the item was imported from, if any (gmail.message_for). sig: the reviewer's
+        greeting and sign-off for the draft."""
         d = {f: getattr(it, f) for f in ITEM_FIELDS}
+        d["draft_reply"] = draft_for(it, sig)
         d.update(id=it.id, run_id=it.run_id, review_status=it.review_status, final_reply=it.final_reply,
                  reviewed_by=it.reviewed_by, reviewed_at=iso(it.reviewed_at), review_note=it.review_note,
                  gmail=gmail.item_info(gm))
@@ -109,8 +132,13 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
                 "by_intent": dict(Counter(i.intent for i in items)),
                 "priority": sum(1 for i in items if i.priority_review and i.review_status == "pending")}
 
-    def detail_json(s, it: Item) -> dict:
-        return item_json(it, events=True, gm=gmail.message_for(s, it))
+    def detail_json(s, it: Item, request: Request) -> dict:
+        d = item_json(it, events=True, gm=gmail.message_for(s, it), sig=signature(s, request))
+        # what to mark in the message for the reviewer: injection phrases, and identifiers hidden from the AI
+        d["highlights"] = sorted([{"start": a, "end": b, "kind": "injection"} for a, b in injection_spans(it.body)]
+                                 + [{"start": a, "end": b, "kind": k} for a, b, k in find_identifiers(it.body)],
+                                 key=lambda h: h["start"])
+        return d
 
     def get_item(s, item_id: int) -> Item:
         it = s.get(Item, item_id, options=[selectinload(Item.events)])
@@ -222,41 +250,44 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
         return {"id": run_id}
 
     @app.get("/api/runs/{run_id}/items")
-    def list_items(run_id: int, s=Depends(session)):
+    def list_items(run_id: int, request: Request, s=Depends(session)):
         items = s.scalars(select(Item).where(Item.run_id == run_id).order_by(Item.id)).all()
         imported = {g.gmail_id: g for g in s.scalars(select(GmailMessage).where(GmailMessage.run_id == run_id))}
-        return [item_json(i, gm=imported.get(i.message_id)) for i in items]
+        sig = signature(s, request)
+        return [item_json(i, gm=imported.get(i.message_id), sig=sig) for i in items]
 
     @app.get("/api/items")
-    def list_all_items(s=Depends(session)):
+    def list_all_items(request: Request, s=Depends(session)):
         """The review queue: every message from every fetch and upload."""
         items = s.scalars(select(Item).order_by(Item.id)).all()
         imported = {(g.gmail_id, g.run_id): g
                     for g in s.scalars(select(GmailMessage).where(GmailMessage.run_id.is_not(None)))}
-        return [item_json(i, gm=imported.get((i.message_id, i.run_id))) for i in items]
+        sig = signature(s, request)
+        return [item_json(i, gm=imported.get((i.message_id, i.run_id)), sig=sig) for i in items]
 
     @app.get("/api/items/{item_id}")
-    def item_detail(item_id: int, s=Depends(session)):
-        return detail_json(s, get_item(s, item_id))
+    def item_detail(item_id: int, request: Request, s=Depends(session)):
+        return detail_json(s, get_item(s, item_id), request)
 
     @app.post("/api/items/{item_id}/review")
     def review(item_id: int, body: ReviewAction, request: Request, s=Depends(session)):
         with db.write_lock:
             it = get_item(s, item_id)
             by = reviewer(request)
-            current = it.final_reply if it.final_reply is not None else it.draft_reply
+            draft = draft_for(it, signature(s, request))
+            current = it.final_reply if it.final_reply is not None else draft
             text = (body.text or "").strip()
             if body.action in ("save", "approve", "reject") and it.review_status != "pending":
                 raise HTTPException(409, f"This reply is already {it.review_status}. Reopen it first.")
             if body.action == "save":
                 if text == current:
-                    return detail_json(s, it)
+                    return detail_json(s, it, request)
                 s.add(ReviewEvent(item=it, action="edited", reviewer=by, before_text=current, after_text=text))
                 it.final_reply = text
             elif body.action == "approve":
                 if not text:
                     raise HTTPException(400, "Cannot approve an empty reply.")
-                s.add(ReviewEvent(item=it, action="approved", reviewer=by, before_text=it.draft_reply,
+                s.add(ReviewEvent(item=it, action="approved", reviewer=by, before_text=draft,
                                   after_text=text))
                 it.final_reply, it.review_status = text, "approved"
                 it.reviewed_by, it.reviewed_at, it.review_note = by, utcnow(), None
@@ -266,7 +297,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
                 it.review_status, it.reviewed_by, it.reviewed_at, it.review_note = "rejected", by, utcnow(), note
             else:  # reopen
                 if it.review_status == "pending":
-                    return detail_json(s, it)
+                    return detail_json(s, it, request)
                 s.add(ReviewEvent(item=it, action="reopened", reviewer=by, note=it.review_status))
                 it.review_status, it.reviewed_by, it.reviewed_at = "pending", None, None
             s.commit()
@@ -276,7 +307,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
         elif body.action == "reopen":
             gmail.delete_draft(it, by)
         s.expire_all()
-        return detail_json(s, get_item(s, item_id))
+        return detail_json(s, get_item(s, item_id), request)
 
     @app.post("/api/items/{item_id}/gmail-draft")
     def gmail_draft(item_id: int, request: Request, s=Depends(session)):
@@ -291,7 +322,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             raise HTTPException(409, "This reply already has a Gmail draft.")
         gmail.create_draft(it, reviewer(request))
         s.expire_all()
-        return detail_json(s, get_item(s, item_id))
+        return detail_json(s, get_item(s, item_id), request)
 
     @app.post("/api/items/{item_id}/regenerate")
     def regenerate(item_id: int, request: Request, s=Depends(session)):
@@ -309,15 +340,48 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
         [result] = TriageRun(lanes, policy, cache=Cache(None), batch_size=1, log=print,
                              blocked_senders=blocked_emails(db)).run([msg])
         with db.write_lock:
-            before = it.final_reply if it.final_reply is not None else it.draft_reply
+            sig = signature(s, request)
+            before = it.final_reply if it.final_reply is not None else draft_for(it, sig)
             apply_result(it, result)
             it.final_reply = None
             s.add(ReviewEvent(item=it, action="regenerated", reviewer=reviewer(request),
-                              before_text=before, after_text=result.draft_reply,
+                              before_text=before, after_text=draft_for(it, sig),
                               note=result.error or f"{result.lane} / {result.model}"))
             s.commit()
             s.refresh(it)
-        return detail_json(s, it)
+        return detail_json(s, it, request)
+
+    # ---- reply signature ----------------------------------------------------------------------------------------
+    def signature_json(s, request: Request) -> dict:
+        greeting, sign_off = signature(s, request)
+        return {"greeting": greeting, "sign_off": sign_off,
+                "defaults": {"greeting": DEFAULT_GREETING, "sign_off": DEFAULT_SIGN_OFF}}
+
+    @app.get("/api/settings/signature")
+    def get_signature(request: Request, s=Depends(session)):
+        return signature_json(s, request)
+
+    @app.put("/api/settings/signature")
+    def put_signature(body: SignatureBody, request: Request, s=Depends(session)):
+        """Empty or missing fields go back to the default."""
+        greeting = (body.greeting or "").strip() or None
+        sign_off = "\n".join(line.rstrip() for line in (body.sign_off or "").strip().splitlines()) or None
+        if greeting and ("\n" in greeting or len(greeting) > MAX_GREETING):
+            raise HTTPException(400, f"The greeting must be one line of at most {MAX_GREETING} characters.")
+        if sign_off and (len(sign_off) > MAX_SIGN_OFF or sign_off.count("\n") > 5):
+            raise HTTPException(400, f"The sign-off can have at most 6 lines and {MAX_SIGN_OFF} characters.")
+        with db.write_lock:
+            email = reviewer(request).lower()
+            row = s.get(ReviewerSettings, email)
+            if greeting is None and sign_off is None:
+                if row:
+                    s.delete(row)
+            elif row:
+                row.greeting, row.sign_off = greeting, sign_off
+            else:
+                s.add(ReviewerSettings(email=email, greeting=greeting, sign_off=sign_off))
+            s.commit()
+        return signature_json(s, request)
 
     # ---- blocklist --------------------------------------------------------------------------------------------
     @app.get("/api/blocked")
@@ -344,7 +408,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
                 other.review_note = reason
             s.commit()
             s.refresh(it)
-            return detail_json(s, it)
+            return detail_json(s, it, request)
 
     @app.delete("/api/blocked/{email}")
     def unblock_sender(email: str, request: Request, s=Depends(session)):

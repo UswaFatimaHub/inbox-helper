@@ -119,7 +119,9 @@ class Item(Base):
     flags: Mapped[list] = mapped_column(JSON, default=list)
     priority_review: Mapped[bool] = mapped_column(Boolean, default=False)
     reason: Mapped[str] = mapped_column(Text, default="")
-    draft_reply: Mapped[str] = mapped_column(Text, default="")
+    draft_reply: Mapped[str] = mapped_column(Text, default="")  # draft_body with the default greeting and sign-off
+    draft_body: Mapped[str | None] = mapped_column(Text)  # what the AI wrote, without greeting or sign-off
+    language: Mapped[str | None] = mapped_column(String(8))  # the candidate's language ("es"); None means English
     lane: Mapped[str] = mapped_column(String(64), default="")
     model: Mapped[str] = mapped_column(String(128), default="")
     prompt_version: Mapped[str] = mapped_column(String(16), default="")
@@ -153,6 +155,16 @@ class ReviewEvent(Base):
     note: Mapped[str | None] = mapped_column(Text)
 
     item: Mapped[Item] = relationship(back_populates="events")
+
+
+class ReviewerSettings(Base):
+    """A reviewer's own greeting and sign-off for drafts (reply.compose). None means the default."""
+    __tablename__ = "reviewer_settings"
+
+    email: Mapped[str] = mapped_column(String(255), primary_key=True)  # the signed-in reviewer, lower-cased
+    greeting: Mapped[str | None] = mapped_column(Text)
+    sign_off: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class BlockedSender(Base):
@@ -201,7 +213,8 @@ class GmailMessage(Base):
 
 
 ITEM_FIELDS = ("message_id", "received_at", "candidate_name", "candidate_email", "role", "subject", "body", "intent",
-               "secondary_intent", "confidence", "flags", "priority_review", "reason", "draft_reply", "lane", "model",
+               "secondary_intent", "confidence", "flags", "priority_review", "reason", "draft_reply", "draft_body", "language",
+               "lane", "model",
                "prompt_version", "latency_s", "error", "processed_at")
 
 

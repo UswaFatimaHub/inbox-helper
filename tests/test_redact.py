@@ -5,7 +5,7 @@ import pytest
 
 from inbox_helper.config import ROOT
 from inbox_helper.loader import load_messages
-from inbox_helper.redact import redact
+from inbox_helper.redact import find_identifiers, redact
 
 
 @pytest.mark.parametrize("text, expected, kinds", [
@@ -49,3 +49,23 @@ def test_only_m039_changes_in_the_sample_and_golden_messages():
     texts |= {g["id"]: f"{g['message'].get('subject', '')}\n{g['message']['body']}" for g in goldens}
     changed = {mid for mid, t in texts.items() if redact(t).text != t}
     assert changed == {"M039"}
+
+
+def _replace_spans(text: str) -> str:
+    for start, end, kind in sorted(find_identifiers(text), reverse=True):
+        text = text[:start] + f"[{kind}]" + text[end:]
+    return text
+
+
+@pytest.mark.parametrize("text", [
+    "Here is my CNIC number 35202-1234567-1 and my bank account number 0123456789012 for the joining bonus.",
+    "IBAN: PK36 SCBL 0000 0011 2345 6702.", "Card 4111 1111 1111 1111 exp soon", "Passport No. AB1234567 attached",
+    "Call me on +92 300 1234567 or 0300-1234567", "My interview is on 2026-10-27 at 14:30, ref 4521.",
+])
+def test_highlight_spans_mark_exactly_what_redact_hides(text):
+    assert _replace_spans(text) == redact(text).text
+
+
+def test_highlight_spans_agree_with_redact_on_the_whole_sample():
+    for m in load_messages(ROOT / "data" / "messages.csv").messages:
+        assert _replace_spans(m.body) == redact(m.body).text, m.message_id

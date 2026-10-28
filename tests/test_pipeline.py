@@ -52,6 +52,24 @@ def test_every_message_gets_one_result_in_input_order():
     assert all(r.review_status == "pending" and r.intent == "application_status" for r in results)
 
 
+def test_greeting_and_sign_off_come_from_code_not_the_model():
+    def answer(ids):  # the model ignores the instruction and writes its own, all on one line
+        return [{**good_item(i), "draft_reply": "Dear C1, thanks for checking in. The recruiter will follow up. "
+                                              "Brightpath Recruiting Team"} for i in ids]
+    [r] = run([lane("a", answer)], n=1)
+    assert r.draft_body == "Thanks for checking in. The recruiter will follow up."
+    assert r.draft_reply == ("Hi C1,\n\nThanks for checking in. The recruiter will follow up.\n\n"
+                             "Best regards,\nBrightpath Recruiting Team")
+
+
+def test_a_spanish_reply_gets_a_spanish_greeting_and_closing():
+    def answer(ids):  # the model reports the language but writes its own greeting anyway
+        return [{**good_item(i), "language": "es", "draft_reply": "Hola C1,\n\nGracias por escribirnos."} for i in ids]
+    [r] = run([lane("a", answer)], n=1)
+    assert r.language == "es" and r.draft_body == "Gracias por escribirnos."
+    assert r.draft_reply == "Hola C1,\n\nGracias por escribirnos.\n\nSaludos cordiales,\nBrightpath Recruiting Team"
+
+
 def test_no_reply_needed_gets_no_draft_and_waits_for_a_reviewer():
     def answer(ids):
         return [{**good_item(i, "no_reply_needed"), "flags": ["unsupported_request"], "reason": "automated notice",

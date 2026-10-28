@@ -6,12 +6,93 @@
   --color-canvas: #f2f4f9;
   --shadow-card: 0 1px 2px rgba(20, 35, 80, 0.05), 0 10px 28px -14px rgba(20, 35, 80, 0.16);
   --shadow-pop: 0 4px 14px rgba(20, 35, 80, 0.1), 0 20px 48px -16px rgba(20, 35, 80, 0.24);
+  /* text on accent-coloured buttons: white in both themes ("white" itself turns dark in dark mode) */
+  --color-on-accent: #fff;
+  /* muted text: one step darker than Tailwind's slate-400, so small grey text passes WCAG AA (4.5:1) on white */
+  --color-slate-400: #677487;
 }
 
 html,
 body,
 #root {
   height: 100%;
+}
+
+/* ---- dark mode -------------------------------------------------------------------------------------------------
+   Components use plain Tailwind colours (slate, white, indigo-50 ...). Dark mode re-points those colour variables
+   instead of adding dark: variants everywhere: slate runs the other way, white becomes the card surface, and each
+   hue's pale tints (50-300) become dark tints of the same hue while its dark shades (700-900) become light ones. */
+:root.dark {
+  color-scheme: dark;
+  --color-canvas: #0a0f1a;
+  --color-white: #111a29;
+  --color-slate-50: #0f1726;
+  --color-slate-100: #172033;
+  --color-slate-200: #243048;
+  --color-slate-300: #3a4862;
+  --color-slate-400: #8794ab;
+  --color-slate-500: #9aa6ba;
+  --color-slate-600: #b3bdcd;
+  --color-slate-700: #cdd4e0;
+  --color-slate-800: #e1e6ee;
+  --color-slate-900: #eef1f6;
+  --color-slate-950: #f7f9fc;
+  --shadow-card: 0 1px 0 rgba(148, 163, 184, 0.05) inset, 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 32px -16px rgba(0, 0, 0, 0.7);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.55), 0 24px 64px -16px rgba(0, 0, 0, 0.8);
+}
+
+:root.dark {
+  --color-indigo-50: color-mix(in oklab, var(--color-indigo-500) 14%, #111a29);
+  --color-indigo-100: color-mix(in oklab, var(--color-indigo-500) 22%, #111a29);
+  --color-indigo-200: color-mix(in oklab, var(--color-indigo-500) 38%, #111a29);
+  --color-indigo-300: color-mix(in oklab, var(--color-indigo-500) 55%, #111a29);
+  --color-indigo-700: color-mix(in oklab, var(--color-indigo-500) 50%, #fff);
+  --color-indigo-800: color-mix(in oklab, var(--color-indigo-500) 35%, #fff);
+  --color-rose-50: color-mix(in oklab, var(--color-rose-500) 14%, #111a29);
+  --color-rose-100: color-mix(in oklab, var(--color-rose-500) 22%, #111a29);
+  --color-rose-200: color-mix(in oklab, var(--color-rose-500) 38%, #111a29);
+  --color-rose-300: color-mix(in oklab, var(--color-rose-500) 55%, #111a29);
+  --color-rose-700: color-mix(in oklab, var(--color-rose-500) 50%, #fff);
+  --color-rose-800: color-mix(in oklab, var(--color-rose-500) 35%, #fff);
+  --color-red-50: color-mix(in oklab, var(--color-red-500) 14%, #111a29);
+  --color-red-100: color-mix(in oklab, var(--color-red-500) 22%, #111a29);
+  --color-red-200: color-mix(in oklab, var(--color-red-500) 38%, #111a29);
+  --color-red-300: color-mix(in oklab, var(--color-red-500) 55%, #111a29);
+  --color-red-700: color-mix(in oklab, var(--color-red-500) 50%, #fff);
+  --color-red-800: color-mix(in oklab, var(--color-red-500) 35%, #fff);
+  --color-emerald-50: color-mix(in oklab, var(--color-emerald-500) 14%, #111a29);
+  --color-emerald-100: color-mix(in oklab, var(--color-emerald-500) 22%, #111a29);
+  --color-emerald-200: color-mix(in oklab, var(--color-emerald-500) 38%, #111a29);
+  --color-emerald-700: color-mix(in oklab, var(--color-emerald-500) 50%, #fff);
+  --color-emerald-800: color-mix(in oklab, var(--color-emerald-500) 35%, #fff);
+  --color-emerald-900: color-mix(in oklab, var(--color-emerald-500) 25%, #fff);
+  --color-amber-50: color-mix(in oklab, var(--color-amber-500) 14%, #111a29);
+  --color-amber-100: color-mix(in oklab, var(--color-amber-500) 22%, #111a29);
+  --color-amber-200: color-mix(in oklab, var(--color-amber-500) 38%, #111a29);
+  --color-amber-300: color-mix(in oklab, var(--color-amber-500) 55%, #111a29);
+  --color-amber-700: color-mix(in oklab, var(--color-amber-500) 55%, #fff);
+  --color-amber-800: color-mix(in oklab, var(--color-amber-500) 40%, #fff);
+  --color-sky-50: color-mix(in oklab, var(--color-sky-500) 14%, #111a29);
+  --color-sky-200: color-mix(in oklab, var(--color-sky-500) 38%, #111a29);
+  --color-sky-700: color-mix(in oklab, var(--color-sky-500) 50%, #fff);
+  --color-violet-50: color-mix(in oklab, var(--color-violet-500) 14%, #111a29);
+  --color-violet-200: color-mix(in oklab, var(--color-violet-500) 38%, #111a29);
+  --color-violet-700: color-mix(in oklab, var(--color-violet-500) 50%, #fff);
+  --color-teal-50: color-mix(in oklab, var(--color-teal-500) 14%, #111a29);
+  --color-teal-200: color-mix(in oklab, var(--color-teal-500) 38%, #111a29);
+  --color-teal-700: color-mix(in oklab, var(--color-teal-500) 50%, #fff);
+}
+
+/* Accent text (links, labels) at 600 is too dark on the dark surfaces; buttons keep their 600 background */
+.dark .text-indigo-600 { color: var(--color-indigo-400); }
+.dark .text-rose-600 { color: var(--color-rose-400); }
+.dark .text-red-600 { color: var(--color-red-400); }
+.dark .text-emerald-600 { color: var(--color-emerald-400); }
+
+/* Keyboard focus is always visible */
+:focus-visible {
+  outline: 2px solid var(--color-indigo-500);
+  outline-offset: 2px;
 }
 
 /* A faint drafting-paper grid under everything, with a soft accent glow top left */
@@ -25,6 +106,13 @@ body {
   background-attachment: fixed;
 }
 
+.dark body {
+  background-image:
+    radial-gradient(ellipse 1100px 650px at 15% -10%, rgb(99 102 241 / 0.08), transparent 60%),
+    linear-gradient(rgb(148 163 184 / 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(148 163 184 / 0.045) 1px, transparent 1px);
+}
+
 ::selection {
   background: rgb(79 70 229 / 0.2);
 }
@@ -32,7 +120,7 @@ body {
 /* Thin, quiet scrollbars for the independently scrolling panes */
 .pane {
   scrollbar-width: thin;
-  scrollbar-color: #d5d9e2 transparent;
+  scrollbar-color: var(--color-slate-300) transparent;
 }
 
 @layer components {
@@ -151,7 +239,7 @@ body {
 }
 
 .shimmer {
-  background: linear-gradient(90deg, #eef0f5 25%, #f8f9fc 50%, #eef0f5 75%);
+  background: linear-gradient(90deg, var(--color-slate-100) 25%, var(--color-slate-50) 50%, var(--color-slate-100) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.4s linear infinite;
 }

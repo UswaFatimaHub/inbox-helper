@@ -11,8 +11,10 @@ CACHE_PATH = ROOT / ".cache" / "triage_cache.json"
 
 # A label recorded on every draft and eval run; bump it when the prompt changes so results can be compared.
 # The cache does not depend on it: cache keys hash the prompt text itself (pipeline.TriageRun._cache_key).
-PROMPT_VERSION = "v4"  # v2: no claimed actions, team voice, acknowledge frustration, spam flag; v3: injection != spam
+PROMPT_VERSION = "v6"  # v2: no claimed actions, team voice, acknowledge frustration, spam flag; v3: injection != spam
 #                        v4: no_reply_needed for automated mail and spam (no draft)
+#                        v5: body only; greeting and sign-off are added by code (reply.py)
+#                        v6: also reports the candidate's language, so code picks a greeting in that language
 
 INTENTS = {
     "application_status": "Asks where their application stands, whether it was received, or whether a decision was made.",

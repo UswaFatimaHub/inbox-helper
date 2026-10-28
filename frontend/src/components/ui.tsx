@@ -10,12 +10,12 @@ export function cx(...parts: (string | false | null | undefined)[]) {
 type Variant = "primary" | "secondary" | "ghost" | "danger" | "destructive" | "success";
 
 const VARIANTS: Record<Variant, string> = {
-  primary: "bg-indigo-600 text-white shadow-sm shadow-indigo-600/20 hover:bg-indigo-500 focus-visible:outline-indigo-600",
-  success: "bg-emerald-600 text-white shadow-sm shadow-emerald-600/20 hover:bg-emerald-500 focus-visible:outline-emerald-600",
+  primary: "bg-indigo-600 text-on-accent shadow-sm shadow-indigo-600/20 hover:bg-indigo-500 focus-visible:outline-indigo-600",
+  success: "bg-emerald-600 text-on-accent shadow-sm shadow-emerald-600/20 hover:bg-emerald-500 focus-visible:outline-emerald-600",
   secondary: "bg-white text-slate-700 ring-1 ring-inset ring-slate-200 hover:bg-slate-50 hover:text-slate-900",
   ghost: "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
   danger: "bg-white text-rose-600 ring-1 ring-inset ring-rose-200 hover:bg-rose-50",
-  destructive: "bg-red-600 text-white shadow-sm shadow-red-600/20 hover:bg-red-500 focus-visible:outline-red-600",
+  destructive: "bg-red-600 text-on-accent shadow-sm shadow-red-600/20 hover:bg-red-500 focus-visible:outline-red-600",
 };
 
 export function Button({

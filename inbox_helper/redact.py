@@ -50,6 +50,28 @@ class Redaction:
     kinds: list[str]  # what was hidden, e.g. ["NATIONAL_ID", "NUMBER"]; empty if nothing
 
 
+def find_identifiers(text: str) -> list[tuple[int, int, str]]:
+    """(start, end, kind) of every identifier redact() hides, as offsets into text, for highlighting it to the
+    reviewer. A found span is blanked before the next pattern runs, the same order and rules as redact()."""
+    spans: list[tuple[int, int, str]] = []
+    masked = text
+    for kind, pattern in PATTERNS:
+        for m in pattern.finditer(masked):
+            value = m.group(0)
+            digits = re.sub(r"\D", "", value)
+            if len(digits) < MIN_DIGITS.get(kind, 0):
+                continue
+            if kind == "CARD_NUMBER" and not _luhn_ok(digits):
+                continue
+            if kind == "IBAN" and not re.search(r"\d{6}", value.replace(" ", "")):
+                continue
+            start, end = (m.start(1), m.end(1)) if kind == "PASSPORT" else (m.start(0), m.end(0))
+            spans.append((start, end, kind))
+        for start, end, _ in spans:
+            masked = masked[:start] + "\0" * (end - start) + masked[end:]
+    return sorted(spans)
+
+
 def redact(text: str) -> Redaction:
     kinds: set[str] = set()
     for kind, pattern in PATTERNS:

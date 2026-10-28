@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
-import { AlertTriangle, Ban, CheckCircle2, Search, XCircle } from "lucide-react";
+import { AlertTriangle, Ban, CheckCircle2, ExternalLink, Mail, Search, XCircle } from "lucide-react";
+import { gmailThreadUrl } from "./DetailPanel";
 import { flagLabel, formatWhen } from "../lib/labels";
 import type { Item, ReviewStatus } from "../types";
 import { IntentChip, cx } from "./ui";
@@ -38,6 +39,7 @@ export function MessageList({ items, selectedId, onSelect, status, onStatus, sta
           {TABS.map((t) => (
             <button
               key={t.key}
+              aria-pressed={status === t.key}
               onClick={() => onStatus(t.key)}
               className={cx(
                 "rounded-md px-1 py-1.5 text-xs font-medium transition-colors",
@@ -66,9 +68,10 @@ export function MessageList({ items, selectedId, onSelect, status, onStatus, sta
           const active = it.id === selectedId;
           const attention = it.priority_review && it.review_status === "pending";
           return (
-            <li key={it.id} data-item={it.id} className="animate-row scroll-my-2">
+            <li key={it.id} data-item={it.id} className="animate-row relative scroll-my-2">
               <button
                 onClick={() => onSelect(it.id)}
+                aria-current={active ? "true" : undefined}
                 className={cx(
                   "relative mb-0.5 w-full rounded-lg px-3.5 py-2.5 text-left transition-colors",
                   active ? "bg-indigo-50/80 ring-1 ring-indigo-200" : "hover:bg-white hover:ring-1 hover:ring-slate-200",
@@ -99,8 +102,32 @@ export function MessageList({ items, selectedId, onSelect, status, onStatus, sta
                       {it.flags.length} {it.flags.length === 1 ? "flag" : "flags"}
                     </span>
                   )}
+                  {it.gmail && it.review_status === "approved" && (
+                    it.gmail.draft_id && !it.gmail.draft_error ? (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200 ring-inset">
+                        <Mail className="size-3" /> In Gmail drafts
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 ring-1 ring-amber-200 ring-inset">
+                        <AlertTriangle className="size-3" /> No Gmail draft
+                      </span>
+                    )
+                  )}
                 </div>
               </button>
+              {it.gmail && (
+                // a sibling of the row button (a link inside a button is invalid), placed over its chip line
+                <a
+                  href={gmailThreadUrl(it.gmail.mailbox, it.gmail.thread_id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open in Gmail"
+                  aria-label={`Open ${it.candidate_name || "this message"} in Gmail`}
+                  className="absolute right-2.5 bottom-2 grid size-7 place-items-center rounded-md text-slate-400 hover:bg-white hover:text-indigo-600 hover:ring-1 hover:ring-slate-200"
+                >
+                  <ExternalLink className="size-3.5" />
+                </a>
+              )}
             </li>
           );
         })}

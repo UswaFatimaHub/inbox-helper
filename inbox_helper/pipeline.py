@@ -21,6 +21,7 @@ from .loader import Message
 from .prompt import build_system_prompt, build_user_prompt
 from .providers import Completion, GeminiClient, OpenRouterClient, ProviderError, RateLimiter
 from .redact import redact
+from .reply import compose, greeting_language, language_of, strip_salutations
 
 # Flags that move a draft to the top of the review queue.
 PRIORITY_FLAGS = {"ambiguous", "sensitive", "unsupported_request", "prompt_injection", "injection_pattern", "hostile_tone",
@@ -56,6 +57,8 @@ class Result:
     final_reply: str | None = None
     reviewed_by: str | None = None
     reviewed_at: str | None = None
+    draft_body: str = ""  # draft_reply without greeting and sign-off: what the AI wrote (reply.py)
+    language: str = "en"  # the candidate's language; picks the greeting and sign-off
 
 
 class Client(Protocol):
@@ -296,12 +299,18 @@ class TriageRun:
         if t.intent == NO_REPLY_INTENT:
             t.draft_reply = ""  # a suggestion to close it; a reviewer who disagrees writes the reply
             flags.discard("unsupported_request")
+        # the model is told to write the body only; this enforces it. Its own greeting, if any, still tells the
+        # language when it did not report one.
+        language = language_of(t.language or greeting_language(t.draft_reply))
+        body = strip_salutations(t.draft_reply, m.candidate_name)
+        t.draft_reply = compose(body, m.candidate_name, language=language)
         flags.update(check_draft(t.draft_reply, f"{m.subject} {m.body}", self.policy))
         result = Result(
             **self._input_fields(m), intent=t.intent, secondary_intent=t.secondary_intent,
             confidence=t.confidence, flags=sorted(flags),
             priority_review=t.intent in PRIORITY_INTENTS or bool(flags & PRIORITY_FLAGS),
-            reason=t.reason, draft_reply=t.draft_reply, lane=lane, model=model, prompt_version=PROMPT_VERSION,
+            reason=t.reason, draft_reply=t.draft_reply, draft_body=body, language=language, lane=lane, model=model,
+            prompt_version=PROMPT_VERSION,
             latency_s=latency, error=None, processed_at=_now())
         self._store(result)
 

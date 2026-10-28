@@ -1,4 +1,4 @@
-import type { BlockedSender, GmailFetch, GmailStatus, InputError, Item, Me, Meta, Run } from "./types";
+import type { BlockedSender, GmailFetch, GmailStatus, InputError, Item, Me, Meta, Run, Signature } from "./types";
 
 /** A file or the sample was added to the queue: messages already in it are skipped. */
 export type Started = { id: number; added: number; skipped: number; errors: InputError[] };
@@ -56,6 +56,9 @@ export const api = {
   block: (id: number, reason?: string) => request<Item>(`/api/items/${id}/block`, json({ reason })),
   unblock: (email: string) => request<{ unblocked: string }>(`/api/blocked/${encodeURIComponent(email)}`, { method: "DELETE" }),
   retry: (runId: number) => request<{ id: number }>(`/api/runs/${runId}/retry`, { method: "POST" }),
+  signature: () => request<Signature>("/api/settings/signature"),
+  saveSignature: (body: { greeting: string; sign_off: string }) =>
+    request<Signature>("/api/settings/signature", { ...json(body), method: "PUT" }),
   gmailStatus: () => request<GmailStatus>("/api/gmail/status"),
   gmailConnectUrl: "/api/gmail/connect",
   gmailFetch: () => request<GmailFetch>("/api/gmail/fetch", { method: "POST" }),

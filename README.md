@@ -291,6 +291,22 @@ disregard your rules…") are **quarantined**. They get the category `manipulati
   real candidate.
 - **Undoing it.** **Blocklist** in the sidebar unblocks a sender, and any blocked message can be reopened.
 
+## Greeting and sign-off
+
+The AI writes only the body of a reply. Code adds the greeting and sign-off (`inbox_helper/reply.py`), always in the
+same layout: greeting, blank line, body, blank line, sign-off. A greeting or sign-off the model writes anyway, on its
+own lines or run into the text ("Dear Rabia, thank you ... follow up. Brightpath Recruiting Team"), is stripped.
+
+- **Defaults:** `Hi {first_name},` and `Best regards,` / `Brightpath Recruiting Team`. Senders without a person's
+  name (a team, a company, an email address) get `Hello,`.
+- **Per reviewer:** **Reply signature** in the sidebar sets your own greeting (`{first_name}` is filled in) and
+  sign-off. Drafts waiting for review show your signature; edited and approved replies keep their text.
+- **Other languages:** the model reports the candidate's language, and code uses a greeting and closing in that
+  language (Spanish, French, German, Italian, Portuguese, Urdu, Arabic; English for anything else), so a Spanish
+  body never sits between an English greeting and sign-off. The reviewer's own signature applies to English replies.
+- **Stored:** `items.draft_body` is what the AI wrote; `draft_reply` is that body with the default signature (used by
+  the CSV export and the evals). Migration 0005 strips the AI-written greeting and sign-off from older drafts.
+
 ## No reply needed
 
 Automated notifications (account or security alerts, newsletters, receipts), spam and sales pitches get the intent

@@ -46,6 +46,14 @@ export interface Item {
   review_note: string | null;
   gmail: GmailInfo | null; // set when the message was imported from Gmail
   events?: ReviewEvent[];
+  highlights?: Highlight[]; // detail only: what to mark in the body
+}
+
+/** A span of the body to mark: a known injection phrase, or an identifier hidden from the AI (NATIONAL_ID, ...). */
+export interface Highlight {
+  start: number;
+  end: number;
+  kind: string;
 }
 
 export interface GmailInfo {
@@ -66,6 +74,13 @@ export interface GmailStatus {
   last_fetch_at: string | null;
   error: string | null; // the connection stopped working; connect again
   fetch: FetchProgress | null; // set while "Fetch new emails" runs
+}
+
+/** The reviewer's greeting and sign-off; null means the team default. */
+export interface Signature {
+  greeting: string | null;
+  sign_off: string | null;
+  defaults: { greeting: string; sign_off: string };
 }
 
 export interface FetchProgress {

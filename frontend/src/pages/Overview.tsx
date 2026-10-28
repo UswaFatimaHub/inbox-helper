@@ -187,7 +187,7 @@ function Sources({ gmail, onGmailChange, onStarted }: {
                 </Button>
               )
             ) : (
-              <a href={api.gmailConnectUrl} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 text-sm font-medium text-white shadow-sm shadow-indigo-600/20 hover:bg-indigo-500">
+              <a href={api.gmailConnectUrl} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 text-sm font-medium text-on-accent shadow-sm shadow-indigo-600/20 hover:bg-indigo-500">
                 <Mail className="size-4" /> {gmail!.connected ? "Reconnect Gmail" : "Connect Gmail"}
               </a>
             )}
@@ -282,7 +282,7 @@ function FetchSteps({ progress, startedAt }: { progress: FetchProgress | null; s
               <span
                 className={cx(
                   "grid size-5 shrink-0 place-items-center rounded-full",
-                  done ? "bg-emerald-500 text-white" : active ? "bg-indigo-50 text-indigo-600 ring-1 ring-indigo-200" : "ring-1 ring-slate-200",
+                  done ? "bg-emerald-500 text-on-accent" : active ? "bg-indigo-50 text-indigo-600 ring-1 ring-indigo-200" : "ring-1 ring-slate-200",
                 )}
               >
                 {done ? <Check className="size-3" strokeWidth={3} /> : active ? <Loader2 className="size-3 animate-spin" /> : null}

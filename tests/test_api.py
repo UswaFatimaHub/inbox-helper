@@ -61,6 +61,30 @@ def test_one_queue_holds_every_run_and_skips_messages_already_in_it(client):
     assert len(queue) == 48 and {i["run_id"] for i in queue} == {first["id"], r["id"]}
 
 
+def test_each_reviewer_can_set_the_greeting_and_sign_off(client):
+    csv = b"message_id,candidate_name,body\nS1,Rabia Aslam,Is the role remote?\n"
+    run_id = client.post("/api/runs", files={"file": ("m.csv", csv, "text/csv")}).json()["id"]
+    wait_done(client, run_id)
+    [item] = client.get("/api/items").json()
+    assert item["draft_reply"].startswith("Hi Rabia,\n\n") and item["draft_reply"].endswith(
+        "\n\nBest regards,\nBrightpath Recruiting Team")
+    assert client.get("/api/settings/signature").json()["greeting"] is None  # nothing set: the defaults
+
+    r = client.put("/api/settings/signature", json={"greeting": "Dear {first_name},", "sign_off": "Warm wishes,\nUswa"})
+    assert r.json()["greeting"] == "Dear {first_name},"
+    body = item["draft_reply"].split("\n\n")[1]
+    assert client.get(f"/api/items/{item['id']}").json()["draft_reply"] == f"Dear Rabia,\n\n{body}\n\nWarm wishes,\nUswa"
+
+    approved = client.post(f"/api/items/{item['id']}/review",
+                           json={"action": "approve", "text": f"Dear Rabia,\n\n{body}\n\nWarm wishes,\nUswa"}).json()
+    assert approved["events"][-1]["before_text"] == approved["events"][-1]["after_text"]  # not counted as an edit
+
+    client.put("/api/settings/signature", json={"greeting": "", "sign_off": ""})  # back to the defaults
+    assert client.get("/api/items").json()[0]["draft_reply"].startswith("Hi Rabia,")
+    assert client.put("/api/settings/signature", json={"greeting": "Hi\nthere"}).status_code == 400
+    assert client.put("/api/settings/signature", json={"sign_off": "\n".join("x" * 7)}).status_code == 400
+
+
 def test_export_of_the_whole_queue_has_only_approved_replies(client):
     run_id = client.post("/api/runs/sample").json()["id"]
     wait_done(client, run_id)

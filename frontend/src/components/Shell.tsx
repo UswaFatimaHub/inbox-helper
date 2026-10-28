@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
-import { Ban, LayoutGrid, ListChecks, LogOut } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { Ban, LayoutGrid, ListChecks, LogOut, Menu, Moon, PenLine, Sun, X } from "lucide-react";
+import { useTheme } from "../lib/theme";
 import type { GmailStatus, Me } from "../types";
 import { Led, cx } from "./ui";
 
@@ -26,9 +27,8 @@ function Wordmark() {
   );
 }
 
-function NavRow({ active, disabled, icon, label, badge, onClick }: {
+function NavRow({ active, icon, label, badge, onClick }: {
   active: boolean;
-  disabled?: boolean;
   icon: ReactNode;
   label: string;
   badge?: ReactNode;
@@ -37,9 +37,9 @@ function NavRow({ active, disabled, icon, label, badge, onClick }: {
   return (
     <button
       onClick={onClick}
-      disabled={disabled}
+      aria-current={active ? "page" : undefined}
       className={cx(
-        "relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[14.5px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-40",
+        "relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[14.5px] font-medium transition-colors",
         active ? "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200/70 ring-inset" : "text-slate-600 hover:bg-slate-100/70 hover:text-slate-900",
       )}
     >
@@ -67,84 +67,23 @@ function GmailLine({ gmail }: { gmail: GmailStatus | null }) {
   );
 }
 
-/** App frame: navigation on the left (groups too while reviewing), the page on the right. */
-export function Shell({ page, onPage, canReview, toReview, groups, blockedCount, onBlocklist, gmail, user, onSignOut, children }: {
-  page: Page;
-  onPage: (p: Page) => void;
-  canReview: boolean;
-  toReview: number;
-  groups?: ReactNode;
-  blockedCount: number;
-  onBlocklist: () => void;
-  gmail: GmailStatus | null;
-  user: Me | null;
-  onSignOut: () => void;
-  children: ReactNode;
-}) {
-  const nav = (
-    <>
-      <NavRow active={page === "home"} icon={<LayoutGrid className="size-4" />} label="Overview" onClick={() => onPage("home")} />
-      <NavRow
-        active={page === "review"}
-        disabled={!canReview}
-        icon={<ListChecks className="size-4" />}
-        label="Review queue"
-        onClick={() => onPage("review")}
-        badge={toReview > 0 && <span className="font-mono text-[11.5px] text-slate-400 tabular-nums">{toReview}</span>}
-      />
-    </>
-  );
-
+function ThemeToggle() {
+  const [theme, toggle] = useTheme();
   return (
-    <div className="flex h-full overflow-hidden">
-      <aside className="hidden w-64 shrink-0 flex-col border-r border-slate-200/80 bg-white/70 backdrop-blur-sm lg:flex">
-        <div className="flex items-center gap-2.5 px-4 pt-4 pb-5">
-          <LogoMark />
-          <Wordmark />
-        </div>
-        <nav className="pane flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-3 pb-3">
-          <div className="space-y-0.5">
-            <p className="microlabel mb-1.5 px-2.5">Workspace</p>
-            {nav}
-          </div>
-          {page === "review" && groups}
-          <div className="space-y-0.5">
-            <p className="microlabel mb-1.5 px-2.5">Safety</p>
-            <NavRow
-              active={false}
-              icon={<Ban className="size-4" />}
-              label="Blocklist"
-              onClick={onBlocklist}
-              badge={blockedCount > 0 && <span className="font-mono text-[11.5px] text-slate-400 tabular-nums">{blockedCount}</span>}
-            />
-          </div>
-        </nav>
-        <div className="space-y-2.5 border-t border-slate-200/80 px-3 py-3">
-          <GmailLine gmail={gmail} />
-          {user && <UserLine user={user} onSignOut={onSignOut} />}
-        </div>
-      </aside>
-
-      <div className="flex min-w-0 flex-1 flex-col">
-        {/* narrow screens: a top bar instead of the sidebar */}
-        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-slate-200/80 bg-white/80 px-3 backdrop-blur-sm lg:hidden">
-          <LogoMark size={26} />
-          <div className="ml-2 flex gap-1 [&>button]:w-auto">{nav}</div>
-          {user?.mode === "google" && (
-            <button onClick={onSignOut} title="Sign out" className="ml-auto grid size-9 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700">
-              <LogOut className="size-4" />
-            </button>
-          )}
-        </header>
-        <main className="min-h-0 flex-1">{children}</main>
-      </div>
-    </div>
+    <button
+      onClick={toggle}
+      title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      className="grid size-8 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+    >
+      {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
+    </button>
   );
 }
 
 function UserLine({ user, onSignOut }: { user: Me; onSignOut: () => void }) {
   return (
-    <div className="flex items-center gap-2 px-1" title={`Signed in as ${user.email}. Recorded on every review action.`}>
+    <div className="flex min-w-0 flex-1 items-center gap-2 px-1" title={`Signed in as ${user.email}. Recorded on every review action.`}>
       <div className="grid size-7 shrink-0 place-items-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600 ring-1 ring-slate-200">
         {(user.name || user.email).slice(0, 1).toUpperCase()}
       </div>
@@ -153,9 +92,121 @@ function UserLine({ user, onSignOut }: { user: Me; onSignOut: () => void }) {
         <p className="truncate text-[11.5px] text-slate-400">{user.mode === "dev" ? "Dev mode · no sign-in" : user.email}</p>
       </div>
       {user.mode === "google" && (
-        <button onClick={onSignOut} title="Sign out" className="grid size-8 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+        <button onClick={onSignOut} title="Sign out" aria-label="Sign out" className="grid size-8 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700">
           <LogOut className="size-4" />
         </button>
+      )}
+    </div>
+  );
+}
+
+type ShellProps = {
+  page: Page;
+  onPage: (p: Page) => void;
+  toReview: number;
+  groups?: ReactNode;
+  blockedCount: number;
+  onBlocklist: () => void;
+  onSignature: () => void;
+  gmail: GmailStatus | null;
+  user: Me | null;
+  onSignOut: () => void;
+};
+
+/** Everything in the sidebar; the same content opens as a sheet on narrow screens. */
+function SidebarBody({ page, onPage, toReview, groups, blockedCount, onBlocklist, onSignature, gmail, user, onSignOut }: ShellProps) {
+  return (
+    <>
+      <div className="flex items-center gap-2.5 px-4 pt-4 pb-5">
+        <LogoMark />
+        <Wordmark />
+      </div>
+      <nav aria-label="Main" className="pane flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-3 pb-3">
+        <div className="space-y-0.5">
+          <p className="microlabel mb-1.5 px-2.5">Workspace</p>
+          <NavRow active={page === "home"} icon={<LayoutGrid className="size-4" />} label="Overview" onClick={() => onPage("home")} />
+          <NavRow
+            active={page === "review"}
+            icon={<ListChecks className="size-4" />}
+            label="Review queue"
+            onClick={() => onPage("review")}
+            badge={toReview > 0 && <span className="font-mono text-[11.5px] text-slate-400 tabular-nums">{toReview}</span>}
+          />
+        </div>
+        {page === "review" && groups}
+        <div className="space-y-0.5">
+          <p className="microlabel mb-1.5 px-2.5">Settings</p>
+          <NavRow active={false} icon={<PenLine className="size-4" />} label="Reply signature" onClick={onSignature} />
+          <NavRow
+            active={false}
+            icon={<Ban className="size-4" />}
+            label="Blocklist"
+            onClick={onBlocklist}
+            badge={blockedCount > 0 && <span className="font-mono text-[11.5px] text-slate-400 tabular-nums">{blockedCount}</span>}
+          />
+        </div>
+      </nav>
+      <div className="space-y-2.5 border-t border-slate-200/80 px-3 py-3">
+        <GmailLine gmail={gmail} />
+        <div className="flex items-center gap-1">
+          {user ? <UserLine user={user} onSignOut={onSignOut} /> : <span className="flex-1" />}
+          <ThemeToggle />
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** App frame: navigation on the left (groups too while reviewing), the page on the right. */
+export function Shell({ children, ...props }: ShellProps & { children: ReactNode }) {
+  const [sheet, setSheet] = useState(false);
+  useEffect(() => {
+    if (!sheet) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setSheet(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sheet]);
+
+  return (
+    <div className="flex h-full overflow-hidden">
+      <aside className="hidden w-64 shrink-0 flex-col border-r border-slate-200/80 bg-white/70 backdrop-blur-sm lg:flex">
+        <SidebarBody {...props} />
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* narrow screens: a top bar, and the sidebar as a sheet */}
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-slate-200/80 bg-white/80 px-3 backdrop-blur-sm lg:hidden">
+          <button
+            onClick={() => setSheet(true)}
+            aria-label="Open navigation"
+            className="grid size-9 place-items-center rounded-lg text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+          >
+            <Menu className="size-5" />
+          </button>
+          <LogoMark size={26} />
+          <span className="truncate text-[15px] font-semibold tracking-tight">{props.page === "home" ? "Overview" : "Review queue"}</span>
+        </header>
+        <main className="min-h-0 flex-1">{children}</main>
+      </div>
+
+      {sheet && (
+        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+          <div className="absolute inset-0 bg-slate-900/30 backdrop-blur-sm" onClick={() => setSheet(false)} />
+          <div
+            className="animate-toast absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col border-r border-slate-200 bg-white shadow-pop"
+            // choosing anything in the sheet closes it
+            onClick={(e) => (e.target as HTMLElement).closest("nav button") && setSheet(false)}
+          >
+            <button
+              onClick={() => setSheet(false)}
+              aria-label="Close navigation"
+              className="absolute top-4 right-3 grid size-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            >
+              <X className="size-4" />
+            </button>
+            <SidebarBody {...props} />
+          </div>
+        </div>
       )}
     </div>
   );

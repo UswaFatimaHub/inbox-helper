@@ -23,6 +23,7 @@ class Triage:
     reason: str
     draft_reply: str
     code_flags: list[str] = field(default_factory=list)
+    language: str = ""  # two-letter code of the candidate's language, as the model reported it
 
 
 def parse_batch_response(text: str, expected_ids: list[str]) -> dict[str, dict]:
@@ -73,7 +74,8 @@ def normalize(raw: dict) -> Triage:
     flags = sorted({str(f).strip().lower() for f in raw_flags} & FLAGS.keys())
     return Triage(intent=intent, secondary_intent=secondary, confidence=round(confidence, 2), flags=flags,
                   reason=str(raw.get("reason") or "").strip()[:300],
-                  draft_reply=str(raw.get("draft_reply") or "").strip(), code_flags=code_flags)
+                  draft_reply=str(raw.get("draft_reply") or "").strip(), code_flags=code_flags,
+                  language=re.sub(r"[^a-z]", "", str(raw.get("language") or "").lower())[:2])
 
 
 _MONTH = r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
@@ -128,6 +130,17 @@ INJECTION_PATTERNS = [
 
 def detect_injection(text: str) -> bool:
     return any(p.search(text) for p in INJECTION_PATTERNS)
+
+
+def injection_spans(text: str) -> list[tuple[int, int]]:
+    """Where the known injection phrases are, for highlighting them to the reviewer. Overlapping matches merge."""
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted((m.start(), m.end()) for p in INJECTION_PATTERNS for m in p.finditer(text)):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        elif end > start:
+            merged.append((start, end))
+    return merged
 
 
 def _norm(text: str) -> str:
