@@ -25,6 +25,10 @@ services:
         sync: false
       - key: ALLOWED_EMAILS
         sync: false
+      - key: GMAIL_ACCOUNT          # the test inbox; see README "Gmail"
+        sync: false
+      - key: GMAIL_TOKEN_KEY        # encrypts the stored Gmail refresh token
+        generateValue: true
       - key: GEMINI_API_KEY
         sync: false
       - key: OPENROUTER_API_KEY

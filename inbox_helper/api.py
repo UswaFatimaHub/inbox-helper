@@ -1,7 +1,8 @@
 """HTTP API and static UI host.
 
 The ASGI app instance lives in inbox_helper.server so that importing this module (e.g. in tests) has no side effects.
-There is deliberately no endpoint that sends a message: approved replies can only be copied or exported.
+There is deliberately no endpoint that sends a message: approved replies can be copied, exported, or (for messages
+imported from Gmail) saved as Gmail drafts that the recruiter sends from Gmail.
 
 Runs are processed by a worker (worker.py) that reads the job table. By default one runs inside this process; pass
 embedded_worker=False (EMBEDDED_WORKER=0) when workers run as their own processes.
@@ -27,7 +28,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth import SESSION_MAX_AGE_S, AuthConfig, auth_router, exchange_code_with_google, require_login
 from .config import (ALL_INTENTS, CACHE_PATH, CODE_FLAGS, DEFAULT_LANES, DEFAULT_POLICY, DEFAULT_PROFILE, FLAGS,
                      PROMPT_VERSION, ROOT, SYSTEM_INTENTS)
-from .db import ITEM_FIELDS, BlockedSender, Database, Item, Job, ReviewEvent, Run, apply_result, iso, utcnow
+from .db import (ITEM_FIELDS, BlockedSender, Database, GmailMessage, Item, Job, ReviewEvent, Run, apply_result, iso,
+                 utcnow)
+from .gmail import GmailService, gmail_router
 from .loader import InputError, LoadResult, Message, load_messages
 from .pipeline import PRIORITY_FLAGS, Cache, Lane, TriageRun
 from .worker import Worker, blocked_emails, default_lanes, enqueue_run
@@ -50,11 +53,14 @@ class ReviewAction(BaseModel):
 
 def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane]] = default_lanes,
                use_cache: bool = True, embedded_worker: bool = True, worker_poll_s: float = 1.0,
-               auth: AuthConfig | None = None, exchange_code=exchange_code_with_google) -> FastAPI:
+               auth: AuthConfig | None = None, exchange_code=exchange_code_with_google,
+               gmail: GmailService | None = None) -> FastAPI:
     """db must already be migrated (Database.upgrade(); server.py does it at startup).
-    auth defaults to AuthConfig.from_env(), which refuses to start without a complete sign-in setup."""
+    auth defaults to AuthConfig.from_env(), which refuses to start without a complete sign-in setup.
+    gmail defaults to the GMAIL_* settings; without them the Gmail routes answer that Gmail is not set up."""
     db = db or Database()
     auth = auth or AuthConfig.from_env()
+    gmail = gmail or GmailService(db)
     policy = DEFAULT_POLICY.read_text(encoding="utf-8")
 
     @asynccontextmanager
@@ -83,10 +89,12 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             yield s
 
     # ---- serialization ----------------------------------------------------------------------------------------
-    def item_json(it: Item, events: bool = False) -> dict:
+    def item_json(it: Item, events: bool = False, gm: GmailMessage | None = None) -> dict:
+        """gm: the Gmail message the item was imported from, if any (gmail.message_for)."""
         d = {f: getattr(it, f) for f in ITEM_FIELDS}
         d.update(id=it.id, run_id=it.run_id, review_status=it.review_status, final_reply=it.final_reply,
-                 reviewed_by=it.reviewed_by, reviewed_at=iso(it.reviewed_at), review_note=it.review_note)
+                 reviewed_by=it.reviewed_by, reviewed_at=iso(it.reviewed_at), review_note=it.review_note,
+                 gmail=gmail.item_info(gm))
         if events:
             d["events"] = [{"action": e.action, "reviewer": e.reviewer, "at": iso(e.at), "before_text": e.before_text,
                             "after_text": e.after_text, "note": e.note} for e in it.events]
@@ -101,6 +109,9 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
                 "by_intent": dict(Counter(i.intent for i in items)),
                 "priority": sum(1 for i in items if i.priority_review and i.review_status == "pending")}
 
+    def detail_json(s, it: Item) -> dict:
+        return item_json(it, events=True, gm=gmail.message_for(s, it))
+
     def get_item(s, item_id: int) -> Item:
         it = s.get(Item, item_id, options=[selectinload(Item.events)])
         if not it:
@@ -108,10 +119,10 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
         return it
 
     # ---- runs ---------------------------------------------------------------------------------------------------
-    def start_run(loaded: LoadResult, input_name: str) -> int:
+    def start_run(loaded: LoadResult, input_name: str, related: list = ()) -> int:
         if not lanes_factory():  # fail now rather than queue a job no worker can process
             raise HTTPException(503, "No AI provider is configured. Add GEMINI_API_KEY or OPENROUTER_API_KEY to .env.")
-        return enqueue_run(db, loaded.messages, input_name=input_name, profile=DEFAULT_PROFILE,
+        return enqueue_run(db, loaded.messages, related, input_name=input_name, profile=DEFAULT_PROFILE,
                            prompt_version=PROMPT_VERSION, input_errors=[asdict(e) for e in loaded.errors])
 
     def load_or_400(path: Path) -> LoadResult:
@@ -123,6 +134,8 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             details = "; ".join(f"row {e.row}: {e.error}" for e in loaded.errors[:5])
             raise HTTPException(400, f"No valid messages to process. {details}")
         return loaded
+
+    app.include_router(gmail_router(gmail, start_run))
 
     # ---- routes -----------------------------------------------------------------------------------------------
     @app.get("/api/health")
@@ -200,11 +213,12 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
     @app.get("/api/runs/{run_id}/items")
     def list_items(run_id: int, s=Depends(session)):
         items = s.scalars(select(Item).where(Item.run_id == run_id).order_by(Item.id)).all()
-        return [item_json(i) for i in items]
+        imported = {g.gmail_id: g for g in s.scalars(select(GmailMessage).where(GmailMessage.run_id == run_id))}
+        return [item_json(i, gm=imported.get(i.message_id)) for i in items]
 
     @app.get("/api/items/{item_id}")
     def item_detail(item_id: int, s=Depends(session)):
-        return item_json(get_item(s, item_id), events=True)
+        return detail_json(s, get_item(s, item_id))
 
     @app.post("/api/items/{item_id}/review")
     def review(item_id: int, body: ReviewAction, request: Request, s=Depends(session)):
@@ -217,7 +231,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
                 raise HTTPException(409, f"This reply is already {it.review_status}. Reopen it first.")
             if body.action == "save":
                 if text == current:
-                    return item_json(it, events=True)
+                    return detail_json(s, it)
                 s.add(ReviewEvent(item=it, action="edited", reviewer=by, before_text=current, after_text=text))
                 it.final_reply = text
             elif body.action == "approve":
@@ -233,12 +247,32 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
                 it.review_status, it.reviewed_by, it.reviewed_at, it.review_note = "rejected", by, utcnow(), note
             else:  # reopen
                 if it.review_status == "pending":
-                    return item_json(it, events=True)
+                    return detail_json(s, it)
                 s.add(ReviewEvent(item=it, action="reopened", reviewer=by, note=it.review_status))
                 it.review_status, it.reviewed_by, it.reviewed_at = "pending", None, None
             s.commit()
-            s.refresh(it)
-            return item_json(it, events=True)
+        # Gmail calls happen outside the write lock; both are no-ops for messages that did not come from Gmail
+        if body.action == "approve":
+            gmail.create_draft(it, by)
+        elif body.action == "reopen":
+            gmail.delete_draft(it, by)
+        s.expire_all()
+        return detail_json(s, get_item(s, item_id))
+
+    @app.post("/api/items/{item_id}/gmail-draft")
+    def gmail_draft(item_id: int, request: Request, s=Depends(session)):
+        """Try again to save an approved reply as a Gmail draft (after a failed attempt, e.g. while disconnected)."""
+        it = get_item(s, item_id)
+        gm = gmail.message_for(s, it)
+        if gm is None:
+            raise HTTPException(400, "This message was not imported from Gmail.")
+        if it.review_status != "approved":
+            raise HTTPException(409, "Only approved replies are saved as Gmail drafts.")
+        if gm.draft_id and not gm.draft_error:
+            raise HTTPException(409, "This reply already has a Gmail draft.")
+        gmail.create_draft(it, reviewer(request))
+        s.expire_all()
+        return detail_json(s, get_item(s, item_id))
 
     @app.post("/api/items/{item_id}/regenerate")
     def regenerate(item_id: int, request: Request, s=Depends(session)):
@@ -264,7 +298,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
                               note=result.error or f"{result.lane} / {result.model}"))
             s.commit()
             s.refresh(it)
-        return item_json(it, events=True)
+        return detail_json(s, it)
 
     # ---- blocklist --------------------------------------------------------------------------------------------
     @app.get("/api/blocked")
@@ -291,7 +325,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
                 other.review_note = reason
             s.commit()
             s.refresh(it)
-            return item_json(it, events=True)
+            return detail_json(s, it)
 
     @app.delete("/api/blocked/{email}")
     def unblock_sender(email: str, request: Request, s=Depends(session)):

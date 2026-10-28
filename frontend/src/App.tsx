@@ -59,8 +59,14 @@ export default function App() {
         setMeta(m);
         setRuns(r);
         setBlocked(b);
-        const linked = Number(new URLSearchParams(location.search).get("run"));
+        const params = new URLSearchParams(location.search);
+        const linked = Number(params.get("run"));
         if (r.length) setRunId(r.some((x) => x.id === linked) ? linked : r[0].id);
+        if (params.get("gmail") === "connected") {
+          // back from Google's consent screen: offer the fetch straight away
+          notify("Gmail connected");
+          if (r.length) setDialog(true);
+        }
       })
       .catch((e) => {
         if (!(e instanceof SignedOutError)) setLoadError((e as Error).message);
@@ -187,7 +193,9 @@ export default function App() {
           ? await api.regenerate(detail.id)
           : action === "block"
             ? await api.block(detail.id, payload?.note)
-            : await api.review(detail.id, { action, ...payload });
+            : action === "draft"
+              ? await api.gmailDraft(detail.id)
+              : await api.review(detail.id, { action, ...payload });
       if (action === "block") {
         // blocking closes every pending message from this sender, so reload the list and the blocklist
         setBlocked(await api.blocked());
@@ -195,11 +203,19 @@ export default function App() {
       }
       setDetail(updated);
       setItems((prev) => prev.map((i) => (i.id === updated.id ? { ...updated, events: undefined } : i)));
+      const gmail = updated.gmail;
       const messages = {
-        save: "Edit saved", approve: "Reply approved", reject: "Draft rejected", reopen: "Reopened for review",
-        regenerate: "New draft ready", block: `Blocked ${updated.candidate_email}`, unblock: "",
+        save: "Edit saved",
+        approve: gmail?.draft_id ? "Reply approved · Gmail draft created" : "Reply approved",
+        reject: "Draft rejected",
+        reopen: gmail && !gmail.draft_error ? "Reopened for review · Gmail draft deleted" : "Reopened for review",
+        regenerate: "New draft ready", block: `Blocked ${updated.candidate_email}`, unblock: "", draft: "Gmail draft created",
       };
-      notify(messages[action]);
+      if (gmail?.draft_error && (action === "approve" || action === "reopen" || action === "draft")) {
+        notify(action === "approve" ? `Approved, but the Gmail draft failed: ${gmail.draft_error}` : gmail.draft_error, "error");
+      } else {
+        notify(messages[action]);
+      }
       if (action === "approve" || action === "reject" || action === "block") {
         // move on to the next message still waiting in this view
         const rest = visible.filter((i) => i.id !== updated.id && i.review_status === "pending");

@@ -6,9 +6,15 @@ Environment:
   EMBEDDED_WORKER=0 do not process runs in this process (run "python -m inbox_helper.worker" separately)
 """
 import os
+from pathlib import Path
 
-from .api import create_app
-from .db import Database
+from dotenv import load_dotenv
+
+# Before the imports below: config reads MODEL_PROFILE at import, and auth/db read the environment at startup.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+from .api import create_app  # noqa: E402
+from .db import Database  # noqa: E402
 
 db = Database()
 if os.environ.get("AUTO_MIGRATE", "1") != "0":

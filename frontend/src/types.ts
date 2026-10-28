@@ -7,7 +7,9 @@ export interface Me {
 export type ReviewStatus = "pending" | "approved" | "rejected" | "blocked";
 
 export interface ReviewEvent {
-  action: "edited" | "approved" | "rejected" | "reopened" | "regenerated" | "blocked" | "unblocked" | "quarantined";
+  action:
+    | "edited" | "approved" | "rejected" | "reopened" | "regenerated" | "blocked" | "unblocked" | "quarantined"
+    | "drafted" | "draft_deleted" | "draft_failed";
   reviewer: string;
   at: string;
   before_text: string | null;
@@ -42,7 +44,33 @@ export interface Item {
   reviewed_by: string | null;
   reviewed_at: string | null;
   review_note: string | null;
+  gmail: GmailInfo | null; // set when the message was imported from Gmail
   events?: ReviewEvent[];
+}
+
+export interface GmailInfo {
+  mailbox: string;
+  thread_id: string;
+  draft_id: string | null;
+  drafted_at: string | null;
+  draft_error: string | null;
+}
+
+export interface GmailStatus {
+  enabled: boolean;
+  missing: string[];
+  account: string;
+  connected: boolean;
+  connected_by: string | null;
+  connected_at: string | null;
+  last_fetch_at: string | null;
+  error: string | null; // the connection stopped working; connect again
+}
+
+export interface GmailFetch {
+  id: number | null; // the new run, or null when there was nothing new
+  imported: number;
+  errors: InputError[];
 }
 
 export interface InputError {

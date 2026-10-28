@@ -31,7 +31,8 @@ def test_upgrade_is_idempotent(db):
 
 def test_database_made_by_create_all_before_alembic_is_upgraded_in_place(empty_db_url):
     db = Database(empty_db_url)
-    legacy = [t for name, t in Base.metadata.tables.items() if name != "jobs"]  # the schema before migration 0002
+    later = {"jobs", "gmail_account", "gmail_messages"}  # added by migrations 0002 and 0004
+    legacy = [t for name, t in Base.metadata.tables.items() if name not in later]
     Base.metadata.create_all(db.engine, tables=legacy)
     with db.Session() as s:
         s.add(Run(input_name="day 1", profile="standard", prompt_version="v3", status="done", total=0))

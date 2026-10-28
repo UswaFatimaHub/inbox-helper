@@ -1,4 +1,4 @@
-import type { BlockedSender, Item, Me, Meta, Run } from "./types";
+import type { BlockedSender, GmailFetch, GmailStatus, Item, Me, Meta, Run } from "./types";
 
 /** Thrown (and announced with a "signed-out" window event) when the session is missing or has expired. */
 export class SignedOutError extends Error {}
@@ -52,6 +52,11 @@ export const api = {
   block: (id: number, reason?: string) => request<Item>(`/api/items/${id}/block`, json({ reason })),
   unblock: (email: string) => request<{ unblocked: string }>(`/api/blocked/${encodeURIComponent(email)}`, { method: "DELETE" }),
   retry: (runId: number) => request<{ id: number }>(`/api/runs/${runId}/retry`, { method: "POST" }),
+  gmailStatus: () => request<GmailStatus>("/api/gmail/status"),
+  gmailConnectUrl: "/api/gmail/connect",
+  gmailFetch: () => request<GmailFetch>("/api/gmail/fetch", { method: "POST" }),
+  gmailDisconnect: () => fetch("/api/gmail/disconnect", { method: "POST" }),
+  gmailDraft: (id: number) => request<Item>(`/api/items/${id}/gmail-draft`, { method: "POST" }),
   exportUrl: (runId: number) => `/api/runs/${runId}/export.csv`,
   auditUrl: (runId: number) => `/api/runs/${runId}/audit.json`,
 };

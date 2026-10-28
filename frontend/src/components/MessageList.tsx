@@ -1,5 +1,5 @@
 import { AlertTriangle, Ban, CheckCircle2, Search, XCircle } from "lucide-react";
-import { formatWhen } from "../lib/labels";
+import { flagLabel, formatWhen } from "../lib/labels";
 import type { Item, ReviewStatus } from "../types";
 import { IntentChip, cx } from "./ui";
 
@@ -81,6 +81,7 @@ export function MessageList({ items, selectedId, onSelect, status, onStatus, sta
                   <IntentChip intent={it.intent} />
                   {it.flags.length > 0 && (
                     <span
+                      title={it.flags.map(flagLabel).join(", ")}
                       className={cx(
                         "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-medium",
                         it.priority_review ? "bg-rose-50 text-rose-600" : "bg-slate-100 text-slate-500",

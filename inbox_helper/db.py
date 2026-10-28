@@ -144,7 +144,8 @@ class ReviewEvent(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), index=True)
-    action: Mapped[str] = mapped_column(String(16))  # edited|approved|rejected|reopened|regenerated|blocked|unblocked|quarantined
+    # edited|approved|rejected|reopened|regenerated|blocked|unblocked|quarantined|drafted|draft_deleted|draft_failed
+    action: Mapped[str] = mapped_column(String(16))
     reviewer: Mapped[str] = mapped_column(String(80))
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     before_text: Mapped[str | None] = mapped_column(Text)
@@ -163,6 +164,40 @@ class BlockedSender(Base):
     blocked_by: Mapped[str] = mapped_column(String(80))
     blocked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     source_item_id: Mapped[int | None] = mapped_column(ForeignKey("items.id"))
+
+
+class GmailAccount(Base):
+    """The one connected mailbox (GMAIL_ACCOUNT, see gmail.py). The refresh token is encrypted with GMAIL_TOKEN_KEY."""
+    __tablename__ = "gmail_account"
+
+    email: Mapped[str] = mapped_column(String(255), primary_key=True)  # stored lower-cased
+    refresh_token: Mapped[str] = mapped_column(Text)
+    scopes: Mapped[str] = mapped_column(Text, default="")
+    connected_by: Mapped[str] = mapped_column(String(80))
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_fetch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)  # e.g. Google stopped accepting the token; cleared by reconnecting
+
+
+class GmailMessage(Base):
+    """An imported Gmail message: what a reply in its thread needs, and the draft made when its reply was approved.
+    The item for it has message_id == gmail_id in the same run. run_id is empty when no row of the fetch was valid."""
+    __tablename__ = "gmail_messages"
+
+    gmail_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), index=True)
+    thread_id: Mapped[str] = mapped_column(String(64))
+    rfc_message_id: Mapped[str] = mapped_column(Text, default="")  # the Message-ID header, for In-Reply-To
+    references_header: Mapped[str] = mapped_column(Text, default="")  # the References header
+    from_name: Mapped[str] = mapped_column(String(255), default="")
+    from_email: Mapped[str] = mapped_column(String(255), default="")
+    subject: Mapped[str] = mapped_column(String(500), default="")
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    draft_id: Mapped[str | None] = mapped_column(String(64))
+    drafted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    draft_error: Mapped[str | None] = mapped_column(Text)
+
+    run: Mapped[Run | None] = relationship()
 
 
 ITEM_FIELDS = ("message_id", "received_at", "candidate_name", "candidate_email", "role", "subject", "body", "intent",

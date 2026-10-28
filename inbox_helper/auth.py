@@ -120,7 +120,7 @@ def is_public(path: str) -> bool:
     return not path.startswith("/api/") or any(path == p or path.startswith(p) for p in PUBLIC_PATHS)
 
 
-def _page(title: str, text: str, status: int) -> HTMLResponse:
+def message_page(title: str, text: str, status: int) -> HTMLResponse:
     return HTMLResponse(f"<!doctype html><meta charset=utf-8><title>{title}</title>"
                         f"<body style='font-family:system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem'>"
                         f"<h1 style='font-size:1.25rem'>{title}</h1><p>{html.escape(text)}</p><p><a href='/'>Back</a></p>",
@@ -149,18 +149,18 @@ def auth_router(config: AuthConfig,
     def callback(request: Request, code: str = "", state: str = "", error: str = ""):
         pending = request.session.pop("oauth", None)
         if error:
-            return _page("Sign-in cancelled", "Google did not sign you in. Go back and try again.", 400)
+            return message_page("Sign-in cancelled", "Google did not sign you in. Go back and try again.", 400)
         if not pending or not code or not secrets.compare_digest(state, pending["state"]) \
                 or time.time() - pending["at"] > 600:
-            return _page("Sign-in expired", "The sign-in link was stale or already used. Start again.", 400)
+            return message_page("Sign-in expired", "The sign-in link was stale or already used. Start again.", 400)
         claims = exchange_code(config, code)
         if (claims.get("iss") not in GOOGLE_ISSUERS or claims.get("aud") != config.client_id
                 or claims.get("exp", 0) < time.time() or claims.get("nonce") != pending["nonce"]
                 or claims.get("email_verified") is not True or not claims.get("email")):
-            return _page("Sign-in failed", "Google's answer could not be verified. Start again.", 400)
+            return message_page("Sign-in failed", "Google's answer could not be verified. Start again.", 400)
         email = claims["email"].lower()
         if not config.allows(email):
-            return _page("Not allowed", f"{email} is not on this tool's list of reviewers. Ask the owner to add "
+            return message_page("Not allowed", f"{email} is not on this tool's list of reviewers. Ask the owner to add "
                                         f"it, or sign in with another account.", 403)
         request.session.clear()
         request.session["user"] = {"email": email, "name": claims.get("name") or email}

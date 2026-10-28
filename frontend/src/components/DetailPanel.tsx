@@ -7,7 +7,7 @@ import { flagSeverity, formatWhen, initials, shortModel } from "../lib/labels";
 import type { Item, Meta } from "../types";
 import { Button, Card, FlagChip, IntentChip, StatusPill, cx } from "./ui";
 
-export type Action = "save" | "approve" | "reject" | "reopen" | "regenerate" | "block" | "unblock";
+export type Action = "save" | "approve" | "reject" | "reopen" | "regenerate" | "block" | "unblock" | "draft";
 
 const SEVERITY_ORDER = { high: 0, attention: 1, info: 2 } as const;
 
@@ -20,7 +20,12 @@ const EVENT_TEXT: Record<string, string> = {
   blocked: "blocked the sender",
   unblocked: "unblocked the sender",
   quarantined: "quarantined this message and discarded the AI draft",
+  drafted: "saved the reply as a Gmail draft",
+  draft_deleted: "deleted the Gmail draft",
+  draft_failed: "could not update the Gmail draft",
 };
+
+const gmailDraftsUrl = (mailbox: string) => `https://mail.google.com/mail/?authuser=${encodeURIComponent(mailbox)}#drafts`;
 
 export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onBack, onPrev, onNext, notify }: {
   item: Item;
@@ -121,6 +126,13 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
           </div>
         )}
 
+        {pending && item.gmail?.draft_error && (
+          <div className="flex gap-3 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <div>{item.gmail.draft_error}</div>
+          </div>
+        )}
+
         <Card title="Candidate's message" icon={<Mail className="size-3.5" />}>
           <div className="text-[15px] font-semibold text-slate-900" dir="auto">{item.subject || "(no subject)"}</div>
           <p className="mt-2 text-[15px] leading-relaxed whitespace-pre-wrap text-slate-700" dir="auto">{item.body}</p>
@@ -163,14 +175,20 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
           {item.reason && <p className="mt-3 text-sm text-slate-600">{item.reason}</p>}
           {item.error && <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 font-mono text-xs text-slate-600">{item.error}</p>}
           {flags.length > 0 && (
-            <ul className="mt-4 space-y-2 border-t border-slate-100 pt-4">
-              {flags.map((f) => (
-                <li key={f} className="flex items-start gap-3 text-sm">
-                  <FlagChip flag={f} />
-                  <span className="text-slate-500">{meta?.flags[f]}</span>
-                </li>
-              ))}
-            </ul>
+            <div className="mt-4 border-t border-slate-100 pt-4">
+              <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                <AlertTriangle className="size-3.5" />
+                {flags.length} {flags.length === 1 ? "flag" : "flags"}: why this message needs a closer look
+              </div>
+              <ul className="space-y-2">
+                {flags.map((f) => (
+                  <li key={f} className="flex items-start gap-3 text-sm">
+                    <FlagChip flag={f} />
+                    <span className="text-slate-500">{meta?.flags[f]}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </Card>
 
@@ -272,7 +290,9 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
               <span>
                 {words} words{editedFromAi && <span className="ml-2 rounded bg-indigo-50 px-1.5 py-0.5 text-indigo-600">edited by you</span>}
               </span>
-              <span className="hidden sm:inline">Ctrl + Enter to approve</span>
+              <span className="hidden sm:inline">
+                {item.gmail && "Approving saves a Gmail draft · "}Ctrl + Enter to approve
+              </span>
             </div>
 
             {rejecting ? (
@@ -368,8 +388,28 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
             )}
             <p className="mt-3 text-xs text-slate-500">
               {item.review_status === "approved" ? "Approved" : "Rejected"} by <span className="font-medium text-slate-700">{item.reviewed_by}</span> · {formatWhen(item.reviewed_at)}
-              {item.review_status === "approved" && " · not sent: copy it or export the approved CSV."}
+              {item.review_status === "approved" &&
+                (item.gmail ? " · not sent: send the Gmail draft yourself." : " · not sent: copy it or export the approved CSV.")}
             </p>
+            {item.review_status === "approved" && item.gmail && (
+              item.gmail.draft_id && !item.gmail.draft_error ? (
+                <p className="mt-3 flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 ring-1 ring-slate-200">
+                  <Mail className="size-3.5 text-rose-500" />
+                  Saved as a draft in {item.gmail.mailbox}, in the candidate's thread.
+                  <a href={gmailDraftsUrl(item.gmail.mailbox)} target="_blank" rel="noreferrer" className="ml-auto font-medium text-indigo-600 hover:underline">
+                    Open Gmail drafts
+                  </a>
+                </p>
+              ) : (
+                <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-200">
+                  <AlertTriangle className="size-3.5 shrink-0" />
+                  <span className="flex-1">{item.gmail.draft_error ?? "No Gmail draft yet."}</span>
+                  <Button size="sm" variant="secondary" icon={<Mail className="size-3.5" />} loading={busy === "draft"} disabled={needName || !!busy} onClick={() => run("draft")}>
+                    Create Gmail draft
+                  </Button>
+                </div>
+              )
+            )}
           </Card>
         )}
 

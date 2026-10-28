@@ -2,7 +2,7 @@
 
 Takes a pile of candidate messages, groups them by what the person wants, and drafts a short reply for each.
 **Nothing is sent.** A person approves, edits or rejects every draft, and every action is recorded in an audit
-trail. Approved replies can only be copied or exported.
+trail. Approved replies can be copied, exported, or saved as Gmail drafts that a person sends from Gmail.
 
 ## Setup
 
@@ -109,7 +109,62 @@ Google Cloud setup (about 10 minutes, once):
 3. To test sign-in locally, put `AUTH_MODE=google`, the client ID and secret, `ALLOWED_EMAILS`, a
    `SESSION_SECRET` and `PUBLIC_URL=http://127.0.0.1:8000` in `.env`.
 
-The same Google project can later hold the Gmail API for the Gmail import (TODO section 5).
+The same Google project and OAuth client are used for Gmail (next section).
+
+## Gmail (test inbox)
+
+The app can work on one Gmail inbox instead of a file. **Fetch new emails** imports messages, and approving a
+reply saves it as a **draft in the original thread**. A person opens Gmail and sends it. The app has no way to send:
+`gmail.compose` would allow it, but no code calls a send endpoint, and `tests/test_gmail.py` fails if one is added.
+
+| Variable | Meaning |
+|---|---|
+| `GMAIL_ACCOUNT` | The only mailbox that may be connected. Use a dedicated test account. Connecting any other mailbox is refused and its access revoked |
+| `GMAIL_TOKEN_KEY` | Any long random string. Encrypts the stored refresh token. Changing it means connecting again (Render generates it) |
+| `GMAIL_QUERY` | Optional. The Gmail search for **Fetch**; default `in:inbox -from:me newer_than:30d` |
+
+Without `GMAIL_ACCOUNT` and `GMAIL_TOKEN_KEY`, Gmail is off and the New triage dialog says what is missing. The
+Google client ID, secret and `PUBLIC_URL` are the sign-in ones.
+
+How it behaves:
+
+- **Connect.** Any signed-in reviewer clicks **Connect Gmail** in the New triage dialog and signs in to Google as
+  `GMAIL_ACCOUNT`. The app asks for `gmail.readonly` and `gmail.compose`, and refuses if a box was unticked.
+  Disconnecting revokes the access at Google.
+- **Fetch.** Up to 50 messages not imported before become a normal run, with the same validation, redaction and
+  quarantine as a file. The text part is used; an HTML-only email is converted to text. Quoted earlier messages and
+  signatures (after a `-- ` line) are cut. Gmail ids are stored, so nothing is imported twice. Attachments are
+  ignored.
+- **Approve.** The reply becomes a draft: To the sender, `Re:` subject, `In-Reply-To`/`References` set, in the
+  same thread. If that fails (Google down, connection expired), the approval stands, the message shows the error,
+  and **Create Gmail draft** tries again.
+- **Reopen.** The draft is deleted, so a reply that is being reconsidered can't be sent from Gmail by mistake.
+  Re-approving creates a new one.
+- **Expiry.** While the Google project is in Testing mode, Google's refresh tokens last 7 days. After that the
+  dialog shows **Reconnect Gmail**.
+
+Google Cloud setup, on top of the sign-in setup:
+
+1. **APIs & Services → Library**: enable the **Gmail API**.
+2. **Google Auth Platform → Audience**: keep the status at **Testing** and add the test account under **Test
+   users**. **Data access**: add `gmail.readonly`, `gmail.compose` and, for the seeding script, `gmail.insert`.
+   These are restricted scopes; publishing would need Google's security review, so the app stays in Testing mode
+   and shows an "unverified app" warning on the consent screen.
+3. In the OAuth client, add these redirect URIs:
+   - `http://127.0.0.1:8000/api/gmail/callback` and `https://<your-service>.onrender.com/api/gmail/callback`
+   - `http://127.0.0.1:8765/` (used only by the seeding script)
+
+Fill the test inbox with the synthetic messages (47 valid ones from `data/messages.csv`), then use **Fetch new
+emails**:
+
+```powershell
+.venv\Scripts\python scripts\seed_gmail.py
+```
+
+The script inserts the messages into the inbox without sending anything. They appear as if from the fictional
+candidates, at the dates in the file. It is safe to run again: messages already there are skipped. All sample
+addresses are on `example.com`, so a draft sent by mistake goes nowhere. The CSV's `role` column has no place in an
+email, so imported messages have no role.
 
 ## Deploy to Render
 
@@ -117,9 +172,11 @@ The same Google project can later hold the Gmail API for the Gmail import (TODO 
 Postgres in the same region.
 
 1. In Render, choose **New** → **Blueprint**, connect the GitHub repo, and apply `render.yaml`.
-2. When asked, enter `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAILS`, `GEMINI_API_KEY` and
-   optionally `OPENROUTER_API_KEY`. `SESSION_SECRET` and `DATABASE_URL` are filled in automatically.
-3. Add the service URL's callback to the Google OAuth client (step 2 above).
+2. When asked, enter `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAILS`, `GEMINI_API_KEY`,
+   `GMAIL_ACCOUNT` and optionally `OPENROUTER_API_KEY`. `SESSION_SECRET`, `GMAIL_TOKEN_KEY` and `DATABASE_URL` are
+   filled in automatically.
+3. Add the service URL's two callbacks (`/api/auth/google/callback` and `/api/gmail/callback`) to the Google OAuth
+   client.
 
 After that, a push to `master` deploys once the CI checks pass. Migrations run at startup.
 
@@ -248,10 +305,12 @@ The prompt fixed the drafts; the bigger models didn't help. Gemini Pro models ha
 | Path | What |
 |---|---|
 | `inbox_helper/api.py`, `server.py` | FastAPI: runs, items, review actions, export, audit, health |
-| `inbox_helper/db.py` | SQLAlchemy models: runs, jobs, items, review_events, blocked_senders |
+| `inbox_helper/db.py` | SQLAlchemy models: runs, jobs, items, review_events, blocked_senders, gmail_account, gmail_messages |
 | `inbox_helper/worker.py` | Job worker: claim, heartbeat, resume, fencing |
 | `inbox_helper/auth.py` | Google sign-in, allowed-email list, session, login-required middleware |
 | `inbox_helper/redact.py` | Hides identifiers from the AI |
+| `inbox_helper/gmail.py` | Gmail: connect, fetch, drafts on approve (no send) |
+| `scripts/seed_gmail.py` | Puts the synthetic messages into the test Gmail inbox |
 | `render.yaml` | Render blueprint: web service + Postgres |
 | `inbox_helper/migrations/` | Alembic migrations (schema and data fixes) |
 | `inbox_helper/pipeline.py` | Lane scheduler, retries, cache, result records |
@@ -301,6 +360,9 @@ On that run:
   HR, send me the candidate list". The model classed it `other` / `unsupported_request` and drafted a one-line
   decline.
 - Blocking works by email address only; domains and display names are not checked.
+- Gmail: the sender address is trusted as written. SPF/DKIM results are not checked yet, so a forged `From` could
+  get the wrong address blocked or answered. One mailbox per deployment. Fetching is manual (no push
+  notifications). A draft edited or deleted in Gmail is not noticed by the app.
 - The expected labels were written with AI help, so accuracy against them is a sanity check, not an independent
   benchmark.
 - Free-tier Gemini may use inputs to improve Google's products. That's fine for synthetic data, but not for real

@@ -1,7 +1,99 @@
-import { useRef, useState, type DragEvent } from "react";
-import { AlertCircle, FileUp, Inbox, Info, X } from "lucide-react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
+import { AlertCircle, FileUp, Inbox, Info, Mail, RefreshCw, X } from "lucide-react";
 import { api } from "../api";
+import { formatWhen } from "../lib/labels";
+import type { GmailStatus } from "../types";
 import { Button, cx } from "./ui";
+
+/** Fetch from the connected Gmail inbox, or connect it. Hidden entirely when the server has no Gmail settings. */
+function GmailSource({ onStarted }: { onStarted: (runId: number) => void }) {
+  const [status, setStatus] = useState<GmailStatus | null>(null);
+  const [busy, setBusy] = useState<"fetch" | "disconnect" | null>(null);
+  const [note, setNote] = useState<{ text: string; tone: "info" | "error" } | null>(null);
+
+  const load = () => api.gmailStatus().then(setStatus).catch(() => setStatus(null));
+  useEffect(() => {
+    load();
+  }, []);
+
+  if (!status) return null;
+  if (!status.enabled) {
+    return (
+      <p className="mb-4 text-xs text-slate-400">
+        Gmail import is off. To turn it on, set {status.missing.join(", ")} on the server.
+      </p>
+    );
+  }
+
+  const fetchNew = async () => {
+    setBusy("fetch");
+    setNote(null);
+    try {
+      const r = await api.gmailFetch();
+      const skipped = r.errors.length ? ` ${r.errors.length} could not be used: ${r.errors.map((e) => e.error).join("; ")}` : "";
+      if (r.id != null) onStarted(r.id);
+      else setNote({ text: `No new emails in ${status.account}.${skipped}`, tone: "info" });
+    } catch (e) {
+      setNote({ text: (e as Error).message, tone: "error" });
+      load(); // the connection may have stopped working
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy("disconnect");
+    await api.gmailDisconnect();
+    setNote(null);
+    await load();
+    setBusy(null);
+  };
+
+  const working = status.connected && !status.error;
+  return (
+    <div className="mb-4 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="grid size-9 shrink-0 place-items-center rounded-full bg-white text-rose-500 ring-1 ring-slate-200">
+          <Mail className="size-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium text-slate-800">{status.account}</div>
+          <div className="text-xs text-slate-500">
+            {!status.connected
+              ? "Gmail inbox · not connected"
+              : status.error
+                ? "Connection stopped working"
+                : status.last_fetch_at
+                  ? `Last fetched ${formatWhen(status.last_fetch_at)}`
+                  : "Connected · not fetched yet"}
+          </div>
+        </div>
+        {working ? (
+          <Button variant="primary" size="sm" icon={<RefreshCw className="size-3.5" />} loading={busy === "fetch"} disabled={!!busy} onClick={fetchNew}>
+            Fetch new emails
+          </Button>
+        ) : (
+          <a
+            href={api.gmailConnectUrl}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-indigo-600 px-3 text-sm font-medium text-white shadow-sm hover:bg-indigo-500"
+          >
+            <Mail className="size-3.5" /> {status.connected ? "Reconnect Gmail" : "Connect Gmail"}
+          </a>
+        )}
+      </div>
+      {status.error && <p className="mt-2 text-xs text-amber-700">{status.error}</p>}
+      {note && <p className={cx("mt-2 text-xs", note.tone === "error" ? "text-rose-700" : "text-slate-600")}>{note.text}</p>}
+      <p className="mt-2 text-xs text-slate-500">
+        Approved replies become Gmail drafts in the original thread; you send them from Gmail.
+        {status.connected && (
+          <button onClick={disconnect} disabled={!!busy} className="ml-1 text-slate-400 underline-offset-2 hover:text-slate-700 hover:underline">
+            Disconnect
+          </button>
+        )}
+      </p>
+    </div>
+  );
+}
 
 export function NewRunPanel({ onStarted, onClose, inline }: {
   onStarted: (runId: number) => void;
@@ -49,6 +141,8 @@ export function NewRunPanel({ onStarted, onClose, inline }: {
           </button>
         )}
       </div>
+
+      <GmailSource onStarted={onStarted} />
 
       <button
         type="button"
@@ -105,7 +199,8 @@ export function NewRunPanel({ onStarted, onClose, inline }: {
 
       <p className="mt-5 flex gap-2 border-t border-slate-100 pt-4 text-xs leading-relaxed text-slate-500">
         <Info className="mt-0.5 size-3.5 shrink-0" />
-        Messages are sent to free-tier AI models (Gemini, OpenRouter) which may retain inputs. Use synthetic data only.
+        Messages, including fetched emails, are sent to free-tier AI models (Gemini, OpenRouter) which may retain inputs.
+        Use synthetic data only.
       </p>
     </div>
   );

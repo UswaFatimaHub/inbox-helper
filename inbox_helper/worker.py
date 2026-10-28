@@ -21,9 +21,10 @@ from datetime import timedelta
 from typing import Callable
 
 from sqlalchemy import and_, func, or_, select, update
+from dotenv import load_dotenv
 from sqlalchemy.exc import IntegrityError
 
-from .config import CACHE_PATH, DEFAULT_LANES, DEFAULT_POLICY, load_api_keys
+from .config import CACHE_PATH, DEFAULT_LANES, DEFAULT_POLICY, ROOT, load_api_keys
 from .db import BlockedSender, Database, Item, Job, Run, apply_result, utcnow
 from .loader import Message
 from .pipeline import Cache, Lane, Result, TriageRun, build_lanes
@@ -42,12 +43,16 @@ def blocked_emails(db: Database) -> frozenset[str]:
         return frozenset(s.scalars(select(BlockedSender.email)).all())
 
 
-def enqueue_run(db: Database, messages: list[Message], **run_fields) -> int:
-    """Store a run and its job; a worker picks it up. Returns the run id."""
+def enqueue_run(db: Database, messages: list[Message], related: list = (), **run_fields) -> int:
+    """Store a run and its job; a worker picks it up. Returns the run id. related: rows with a .run (e.g. the
+    imported Gmail messages), stored in the same transaction."""
     with db.write_lock, db.Session() as s:
         run = Run(total=len(messages), status="queued", **run_fields)
         run.job = Job(messages=[asdict(m) for m in messages])
         s.add(run)
+        for row in related:
+            row.run = run
+            s.add(row)
         s.commit()
         return run.id
 
@@ -210,6 +215,7 @@ class Worker:
 
 
 def main() -> None:
+    load_dotenv(ROOT / ".env")  # before Database() reads DATABASE_URL
     db = Database()
     if os.environ.get("AUTO_MIGRATE", "1") != "0":
         db.upgrade()

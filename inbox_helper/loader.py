@@ -58,7 +58,7 @@ def load_messages(path: str | Path) -> LoadResult:
     if not text.strip():
         raise InputError(f"{path.name} is empty.")
     records = _read_csv(text, path.name) if suffix == ".csv" else _read_json(text, path.name)
-    return _validate(records)
+    return validate_records(records)
 
 
 def _read_csv(text: str, name: str) -> list[dict]:
@@ -94,7 +94,8 @@ def _read_json(text: str, name: str) -> list[dict]:
     return data
 
 
-def _validate(records: list) -> LoadResult:
+def validate_records(records: list) -> LoadResult:
+    """Validate message dicts from any source (file rows, imported emails)."""
     messages, errors = [], []
     seen_ids: set[str] = set()
     seen_bodies: dict[str, str] = {}
