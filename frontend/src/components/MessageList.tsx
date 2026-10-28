@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { AlertTriangle, Ban, CheckCircle2, Search, XCircle } from "lucide-react";
 import { flagLabel, formatWhen } from "../lib/labels";
 import type { Item, ReviewStatus } from "../types";
@@ -24,6 +25,12 @@ export function MessageList({ items, selectedId, onSelect, status, onStatus, sta
   placeholders: number; // drafts still being written: shown as shimmering rows
   emptyHint: string;
 }) {
+  // keep the selected message visible when it changes from outside the list (J/K, next after approve, a link)
+  const list = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    list.current?.querySelector(`[data-item="${selectedId}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [selectedId]);
+
   return (
     <div className="flex min-h-0 flex-col">
       <div className="space-y-3 border-b border-slate-200/80 p-3">
@@ -53,13 +60,13 @@ export function MessageList({ items, selectedId, onSelect, status, onStatus, sta
         </label>
       </div>
 
-      <ul className="pane min-h-0 flex-1 overflow-y-auto p-2">
+      <ul ref={list} className="pane min-h-0 flex-1 overflow-y-auto p-2">
         {items.length === 0 && placeholders === 0 && <li className="px-4 py-12 text-center text-sm text-slate-400">{emptyHint}</li>}
         {items.map((it) => {
           const active = it.id === selectedId;
           const attention = it.priority_review && it.review_status === "pending";
           return (
-            <li key={it.id} className="animate-row">
+            <li key={it.id} data-item={it.id} className="animate-row scroll-my-2">
               <button
                 onClick={() => onSelect(it.id)}
                 className={cx(
