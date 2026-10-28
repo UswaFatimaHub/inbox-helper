@@ -1,20 +1,90 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
-import { AlertCircle, FileUp, Inbox, Info, Mail, RefreshCw, X } from "lucide-react";
+import { AlertCircle, Check, FileUp, Inbox, Info, Loader2, Mail, RefreshCw, X } from "lucide-react";
 import { api } from "../api";
-import { formatWhen } from "../lib/labels";
-import type { GmailStatus } from "../types";
+import { formatDuration, formatWhen } from "../lib/labels";
+import { useNow } from "../lib/useNow";
+import type { FetchProgress, GmailStatus } from "../types";
 import { Button, cx } from "./ui";
+
+const FETCH_STEPS: { stage: FetchProgress["stage"]; label: string }[] = [
+  { stage: "searching", label: "Search the inbox" },
+  { stage: "downloading", label: "Download new emails" },
+  { stage: "queueing", label: "Hand them to the AI" },
+];
+
+/** Live steps of a running fetch, from the server's progress (null until the first poll answers). */
+function FetchSteps({ progress, startedAt }: { progress: FetchProgress | null; startedAt: number }) {
+  const now = useNow(true);
+  const stage = progress?.stage ?? "searching";
+  const current = FETCH_STEPS.findIndex((s) => s.stage === stage);
+  const found = progress?.found ?? 0;
+  const downloaded = progress?.downloaded ?? 0;
+
+  return (
+    <div className="mt-3 rounded-lg bg-white p-3 ring-1 ring-slate-200" aria-live="polite">
+      <div className="mb-2.5 flex items-center justify-between text-xs">
+        <span className="font-medium text-slate-700">Fetching new emails…</span>
+        <span className="text-slate-400 tabular-nums">{formatDuration((now - startedAt) / 1000)}</span>
+      </div>
+      <ol className="space-y-2">
+        {FETCH_STEPS.map((step, i) => {
+          const done = i < current;
+          const active = i === current;
+          return (
+            <li key={step.stage} className="flex items-center gap-2.5 text-sm">
+              <span
+                className={cx(
+                  "grid size-5 shrink-0 place-items-center rounded-full",
+                  done ? "bg-emerald-500 text-white" : active ? "bg-indigo-50 text-indigo-600 ring-1 ring-indigo-200" : "ring-1 ring-slate-200",
+                )}
+              >
+                {done ? <Check className="size-3" strokeWidth={3} /> : active ? <Loader2 className="size-3 animate-spin" /> : null}
+              </span>
+              <span className={cx("flex-1", done ? "text-slate-500" : active ? "font-medium text-slate-800" : "text-slate-400")}>{step.label}</span>
+              <span className="text-xs text-slate-500 tabular-nums">
+                {step.stage === "searching" && (done || found > 0) && `${found} new`}
+                {step.stage === "downloading" && (active || done) && `${downloaded} / ${found}`}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="mt-3 h-1 overflow-hidden rounded-full bg-slate-100">
+        {stage === "downloading" && found > 0 ? (
+          <div className="h-full rounded-full bg-indigo-500 transition-all duration-300" style={{ width: `${(downloaded / found) * 100}%` }} />
+        ) : (
+          <div className={cx("h-full w-2/5 rounded-full", stage === "queueing" ? "w-full bg-indigo-500" : "animate-indeterminate bg-indigo-400")} />
+        )}
+      </div>
+    </div>
+  );
+}
 
 /** Fetch from the connected Gmail inbox, or connect it. Hidden entirely when the server has no Gmail settings. */
 function GmailSource({ onStarted }: { onStarted: (runId: number) => void }) {
   const [status, setStatus] = useState<GmailStatus | null>(null);
   const [busy, setBusy] = useState<"fetch" | "disconnect" | null>(null);
   const [note, setNote] = useState<{ text: string; tone: "info" | "error" } | null>(null);
+  const [progress, setProgress] = useState<FetchProgress | null>(null);
+  const [fetchStart, setFetchStart] = useState(0);
 
   const load = () => api.gmailStatus().then(setStatus).catch(() => setStatus(null));
   useEffect(() => {
     load();
   }, []);
+
+  // while a fetch runs, poll its progress (the fetch request itself only answers at the end)
+  useEffect(() => {
+    if (busy !== "fetch") return setProgress(null);
+    let live = true;
+    const t = window.setInterval(() => {
+      api.gmailStatus().then((s) => live && s.fetch && setProgress(s.fetch)).catch(() => undefined);
+    }, 600);
+    return () => {
+      live = false;
+      window.clearInterval(t);
+    };
+  }, [busy]);
 
   if (!status) return null;
   if (!status.enabled) {
@@ -27,6 +97,7 @@ function GmailSource({ onStarted }: { onStarted: (runId: number) => void }) {
 
   const fetchNew = async () => {
     setBusy("fetch");
+    setFetchStart(Date.now());
     setNote(null);
     try {
       const r = await api.gmailFetch();
@@ -81,6 +152,7 @@ function GmailSource({ onStarted }: { onStarted: (runId: number) => void }) {
           </a>
         )}
       </div>
+      {busy === "fetch" && <FetchSteps progress={progress} startedAt={fetchStart} />}
       {status.error && <p className="mt-2 text-xs text-amber-700">{status.error}</p>}
       {note && <p className={cx("mt-2 text-xs", note.tone === "error" ? "text-rose-700" : "text-slate-600")}>{note.text}</p>}
       <p className="mt-2 text-xs text-slate-500">

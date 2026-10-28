@@ -86,9 +86,22 @@ export function formatWhen(value: string | null | undefined): string {
 }
 
 export function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
+  // words only, so "Sarah (HR)" gives "SH" rather than "S("
+  const parts = name.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
   if (!parts.length) return "?";
   return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+}
+
+/** Short name for a run: where its messages came from. */
+export function runSource(inputName: string): string {
+  if (inputName.startsWith("Gmail: ")) return "Gmail inbox";
+  return inputName.replace(/\s*\(messages\.csv\)$/, "");
+}
+
+/** 45 → "45s", 125 → "2m 05s" */
+export function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 }
 
 export const shortModel = (m: string) => m.split("/").pop()?.replace(":free", "") ?? m;

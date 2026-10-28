@@ -17,16 +17,20 @@ function Row({ active, onClick, icon, label, count, tone }: {
     <button
       onClick={onClick}
       className={cx(
-        "group flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
-        active ? "bg-white font-medium text-slate-900 shadow-sm ring-1 ring-slate-200" : "text-slate-600 hover:bg-white/70 hover:text-slate-900",
+        "group flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors",
+        active
+          ? "bg-white font-medium text-slate-900 shadow-sm ring-1 ring-slate-200"
+          : count === 0
+            ? "text-slate-400 hover:bg-white/70 hover:text-slate-700"
+            : "text-slate-600 hover:bg-white/70 hover:text-slate-900",
       )}
     >
-      <span className="grid size-5 place-items-center">{icon}</span>
+      <span className={cx("grid size-5 place-items-center", count === 0 && !active && "opacity-50")}>{icon}</span>
       <span className="flex-1 truncate">{label}</span>
       <span
         className={cx(
           "min-w-6 rounded-full px-1.5 text-center text-xs tabular-nums",
-          tone === "alert" && count > 0 ? "bg-rose-100 font-semibold text-rose-700" : "text-slate-400",
+          tone === "alert" && count > 0 ? "bg-rose-100 font-semibold text-rose-700" : count === 0 ? "text-slate-300" : "text-slate-400",
         )}
       >
         {count}

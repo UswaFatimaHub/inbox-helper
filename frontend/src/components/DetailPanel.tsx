@@ -96,8 +96,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
                 </span>
               )}
               {item.role && <span>{item.role}</span>}
-              <span>{formatWhen(item.received_at)}</span>
-              <span className="text-slate-400">{item.message_id}</span>
+              <span title={`Message id ${item.message_id}`}>{formatWhen(item.received_at)}</span>
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -282,7 +281,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
                 if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !needName && text.trim()) run("approve", { text });
               }}
               dir="auto"
-              rows={8}
+              rows={Math.min(14, Math.max(5, text.split("\n").length + Math.ceil(text.length / 90)))}
               placeholder={item.draft_reply ? "" : "The AI could not draft this one. Write the reply here."}
               className="w-full resize-y rounded-xl bg-slate-50/60 px-4 py-3 text-[15px] leading-relaxed text-slate-800 ring-1 ring-slate-200 ring-inset placeholder:text-slate-400 focus:bg-white focus:ring-2 focus:ring-indigo-500 focus:outline-none"
             />

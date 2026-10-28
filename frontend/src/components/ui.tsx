@@ -112,8 +112,8 @@ export function Card({ title, icon, actions, children, className }: {
   return (
     <section className={cx("rounded-2xl bg-white ring-1 ring-slate-200/80 shadow-[0_1px_2px_rgba(16,24,40,0.04)]", className)}>
       {title && (
-        <header className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3">
-          <h3 className="flex items-center gap-2 text-[13px] font-semibold tracking-wide text-slate-500 uppercase">
+        <header className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-100 px-5 py-2">
+          <h3 className="flex items-center gap-2 text-sm font-medium text-slate-600 [&_svg]:text-slate-400">
             {icon}
             {title}
           </h3>

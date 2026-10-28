@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Ban, CheckCircle2, ChevronDown, Clock3, Inbox, Loader2, LogIn, MousePointerClick, ShieldCheck, XCircle } from "lucide-react";
+import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, Loader2, LogIn, MousePointerClick, ShieldCheck, Sparkles, X } from "lucide-react";
 import { api, SignedOutError } from "./api";
 import { BlocklistDialog } from "./components/BlocklistDialog";
 import { DetailPanel, type Action } from "./components/DetailPanel";
@@ -8,7 +8,8 @@ import { MessageList, type StatusFilter } from "./components/MessageList";
 import { NewRunDialog, NewRunPanel } from "./components/NewRunDialog";
 import { Sidebar, type Group } from "./components/Sidebar";
 import { cx } from "./components/ui";
-import { INTENT_LABELS, intentLabel } from "./lib/labels";
+import { INTENT_LABELS, formatDuration, intentLabel, runSource } from "./lib/labels";
+import { useNow } from "./lib/useNow";
 import type { BlockedSender, Item, Me, Meta, Run } from "./types";
 
 export default function App() {
@@ -30,6 +31,7 @@ export default function App() {
   const [toast, setToast] = useState<{ msg: string; tone: "ok" | "error" } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pollKey, setPollKey] = useState(0); // bumped to resume polling after a retry
+  const [finishedRun, setFinishedRun] = useState<number | null>(null); // run that finished while watched
   const toastTimer = useRef<number | undefined>(undefined);
 
   const notify = useCallback((msg: string, tone: "ok" | "error" = "ok") => {
@@ -101,10 +103,17 @@ export default function App() {
     if (runId == null) return;
     let stop = false;
     let timer: number | undefined;
+    let wasActive = false;
     const tick = async () => {
       try {
         const r = await refresh(runId);
-        if (!stop && isActive(r)) timer = window.setTimeout(tick, 1500);
+        if (stop) return;
+        if (isActive(r)) {
+          wasActive = true;
+          timer = window.setTimeout(tick, 1500);
+        } else if (wasActive && r.status === "done") {
+          setFinishedRun(r.id);
+        }
       } catch (e) {
         if (!stop) notify((e as Error).message, "error");
       }
@@ -245,6 +254,15 @@ export default function App() {
     setGroup(g);
     if (g === "blocked_sender") setStatus("all"); // blocked messages are closed, so "To review" would hide them
   };
+  const showAttention = () => {
+    setGroup("attention");
+    setStatus("pending");
+    setFinishedRun(null);
+  };
+  // placeholder rows for drafts still being written (only in views where new drafts would show up)
+  const placeholders = run && isActive(run) && status !== "approved" && status !== "rejected" && group === "all" && !query
+    ? Math.min(3, run.total - run.processed)
+    : 0;
 
   if (loadError) {
     return (
@@ -290,7 +308,8 @@ export default function App() {
         </div>
       ) : (
         <>
-          {run && <RunBar run={run} counts={statusCounts} onRetry={() => retryRun(run.id)} />}
+          {run && <RunBar run={run} counts={statusCounts} onRetry={() => retryRun(run.id)} onAttention={showAttention} />}
+          {run && finishedRun === run.id && <ReadyBanner run={run} onAttention={showAttention} onClose={() => setFinishedRun(null)} />}
           <main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[232px_380px_1fr]">
             <aside className="hidden min-h-0 border-r border-slate-200/80 lg:flex lg:flex-col">
               <Sidebar
@@ -330,7 +349,8 @@ export default function App() {
                 statusCounts={statusCounts}
                 query={query}
                 onQuery={setQuery}
-                emptyHint={run && isActive(run) && items.length === 0 ? "Drafts will appear here as the AI finishes them…" : "Nothing here. Try another group or tab."}
+                placeholders={placeholders}
+                emptyHint="Nothing here. Try another group or tab."
               />
             </section>
 
@@ -394,56 +414,17 @@ export default function App() {
 
 const isActive = (r: Run) => r.status === "queued" || r.status === "running";
 
-function RunBar({ run, counts, onRetry }: { run: Run; counts: Record<StatusFilter, number>; onRetry: () => void }) {
+function RunBar({ run, counts, onRetry, onAttention }: {
+  run: Run;
+  counts: Record<StatusFilter, number>;
+  onRetry: () => void;
+  onAttention: () => void;
+}) {
   const [showErrors, setShowErrors] = useState(false);
-  const running = isActive(run);
-  const pct = run.total ? Math.round((run.processed / run.total) * 100) : 0;
-  const reviewed = counts.approved + counts.rejected + counts.blocked;
 
   return (
     <div className="border-b border-slate-200/80 bg-white">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 lg:px-6">
-        <Stat icon={<Inbox className="size-4 text-slate-400" />} label="Messages" value={run.total} />
-        <Stat icon={<AlertCircle className="size-4 text-rose-500" />} label="Need attention" value={run.priority} />
-        <Stat icon={<Clock3 className="size-4 text-slate-400" />} label="To review" value={counts.pending} />
-        <Stat icon={<CheckCircle2 className="size-4 text-emerald-500" />} label="Approved" value={counts.approved} />
-        <Stat icon={<XCircle className="size-4 text-rose-400" />} label="Rejected" value={counts.rejected} />
-        {counts.blocked > 0 && <Stat icon={<Ban className="size-4 text-zinc-600" />} label="Blocked" value={counts.blocked} />}
-
-        <div className="flex w-full items-center gap-3 sm:ml-auto sm:w-auto sm:max-w-sm sm:min-w-56 sm:flex-1">
-          {running ? (
-            <>
-              <Loader2 className="size-4 animate-spin text-indigo-500" />
-              <div className="flex-1">
-                <div className="mb-1 flex justify-between text-xs text-slate-500">
-                  <span>{run.status === "queued" ? "Waiting for a worker…" : "AI is drafting replies…"}</span>
-                  <span className="tabular-nums">{run.processed}/{run.total}</span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
-                  <div className="h-full rounded-full bg-indigo-500 transition-all duration-500" style={{ width: `${pct}%` }} />
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="flex-1">
-              <div className="mb-1 flex justify-between text-xs text-slate-500">
-                {run.status === "failed" ? (
-                  <span>
-                    Run failed: {run.error}{" "}
-                    <button onClick={onRetry} className="font-medium text-indigo-600 hover:underline">Retry</button>
-                  </span>
-                ) : (
-                  <span>Review progress</span>
-                )}
-                <span className="tabular-nums">{reviewed}/{counts.all} reviewed</span>
-              </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
-                <div className="h-full rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${counts.all ? (reviewed / counts.all) * 100 : 0}%` }} />
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      {isActive(run) ? <RunProgress run={run} /> : <ReviewSummary run={run} counts={counts} onRetry={onRetry} onAttention={onAttention} />}
       {run.input_errors.length > 0 && (
         <div className="border-t border-amber-100 bg-amber-50/70 px-4 py-2 text-xs text-amber-800 lg:px-6">
           <button onClick={() => setShowErrors((v) => !v)} className="font-medium hover:underline">
@@ -462,12 +443,140 @@ function RunBar({ run, counts, onRetry }: { run: Run; counts: Record<StatusFilte
   );
 }
 
-function Stat({ icon, label, value }: { icon: React.ReactNode; label: string; value: number }) {
+const RUN_STEPS = [
+  { key: "queued", label: "Queued" },
+  { key: "running", label: "Reading & drafting" },
+  { key: "done", label: "Ready to review" },
+] as const;
+
+/** While the AI works: what stage it is at, how far along, how long it has taken and roughly how long is left. */
+function RunProgress({ run }: { run: Run }) {
+  const now = useNow(true);
+  const elapsed = Math.max(0, (now - new Date(run.created_at).getTime()) / 1000);
+  const pct = run.total ? (run.processed / run.total) * 100 : 0;
+  // estimate only once a few drafts are in; batches arrive in bursts, so earlier guesses swing wildly
+  const left = run.processed >= 3 && run.processed < run.total ? ((run.total - run.processed) * elapsed) / run.processed : null;
+  const quarantined = run.by_intent.manipulation_attempt ?? 0;
+  const step = run.status === "queued" ? 0 : 1;
+
   return (
-    <div className="flex items-center gap-2">
-      {icon}
-      <span className="text-lg font-semibold tabular-nums">{value}</span>
-      <span className="text-xs text-slate-500">{label}</span>
+    <div className="px-4 py-4 lg:px-6" aria-live="polite">
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <div className="grid size-9 shrink-0 place-items-center rounded-full bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100">
+            <Sparkles className="size-4" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-900">
+              {run.status === "queued" ? "Getting ready…" : `Drafting replies · ${run.processed} of ${run.total}`}
+            </div>
+            <div className="mt-0.5 text-xs text-slate-500">
+              {run.status === "queued"
+                ? `${run.total} messages from ${runSource(run.input_name)} are waiting for the AI.`
+                : run.processed === 0
+                  ? "The AI is reading the first messages."
+                  : `So far ${run.priority} need${run.priority === 1 ? "s" : ""} attention${quarantined ? ` · ${quarantined} quarantined` : ""}. You can start reviewing as drafts arrive.`}
+            </div>
+          </div>
+        </div>
+        <ol className="hidden items-center gap-1.5 text-xs md:flex">
+          {RUN_STEPS.map((s, i) => (
+            <li key={s.key} className="flex items-center gap-1.5">
+              {i > 0 && <span className="h-px w-4 bg-slate-200" />}
+              <span
+                className={cx(
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5",
+                  i < step ? "text-emerald-700" : i === step ? "bg-indigo-50 font-medium text-indigo-700 ring-1 ring-indigo-200" : "text-slate-400",
+                )}
+              >
+                {i < step && <CheckCircle2 className="size-3.5" />}
+                {i === step && <Loader2 className="size-3.5 animate-spin" />}
+                {s.label}
+              </span>
+            </li>
+          ))}
+        </ol>
+        <div className="text-right text-xs text-slate-500 tabular-nums">
+          <div className="font-medium text-slate-700">{formatDuration(elapsed)}</div>
+          <div>{left != null ? `about ${formatDuration(left)} left` : "elapsed"}</div>
+        </div>
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+        {run.status === "queued" || run.processed === 0 ? (
+          <div className="animate-indeterminate h-full w-2/5 rounded-full bg-indigo-400" />
+        ) : (
+          <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-700" style={{ width: `${pct}%` }} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** After the run: review progress as one stacked bar, and a way straight to what needs attention. */
+function ReviewSummary({ run, counts, onRetry, onAttention }: {
+  run: Run;
+  counts: Record<StatusFilter, number>;
+  onRetry: () => void;
+  onAttention: () => void;
+}) {
+  const reviewed = counts.approved + counts.rejected + counts.blocked;
+  const share = (n: number) => `${counts.all ? (n / counts.all) * 100 : 0}%`;
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5 lg:px-6">
+      <div className="min-w-0 text-sm text-slate-500">
+        <span className="font-medium text-slate-800">{run.total} messages</span>
+        {run.elapsed_s != null && <span> · drafted in {formatDuration(run.elapsed_s)}</span>}
+      </div>
+      {run.status === "failed" && (
+        <div className="flex items-center gap-2 text-xs text-rose-700">
+          <AlertCircle className="size-4" /> Run failed: {run.error}
+          <button onClick={onRetry} className="font-medium text-indigo-600 hover:underline">Retry</button>
+        </div>
+      )}
+      <div className="flex min-w-60 flex-1 items-center gap-3 sm:ml-auto sm:max-w-md">
+        <div
+          className="flex h-2 flex-1 overflow-hidden rounded-full bg-slate-100"
+          title={`${counts.approved} approved · ${counts.rejected} rejected · ${counts.blocked} blocked · ${counts.pending} to review`}
+        >
+          <div className="bg-emerald-500 transition-all duration-500" style={{ width: share(counts.approved) }} />
+          <div className="bg-rose-300 transition-all duration-500" style={{ width: share(counts.rejected) }} />
+          <div className="bg-zinc-500 transition-all duration-500" style={{ width: share(counts.blocked) }} />
+        </div>
+        <span className="text-xs whitespace-nowrap text-slate-500 tabular-nums">
+          {reviewed} of {counts.all} reviewed
+        </span>
+      </div>
+      {run.priority > 0 && (
+        <button
+          onClick={onAttention}
+          className="inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700 ring-1 ring-rose-200 hover:bg-rose-100"
+        >
+          <AlertTriangle className="size-3.5" /> {run.priority} need attention
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Shown once when the run being watched finishes. */
+function ReadyBanner({ run, onAttention, onClose }: { run: Run; onAttention: () => void; onClose: () => void }) {
+  return (
+    <div className="animate-row flex flex-wrap items-center gap-3 border-b border-emerald-100 bg-emerald-50/70 px-4 py-2.5 text-sm text-emerald-900 lg:px-6">
+      <CheckCircle2 className="size-4 text-emerald-600" />
+      <span className="flex-1">
+        <span className="font-medium">All {run.total} drafts are ready</span>
+        {run.elapsed_s != null && <span className="text-emerald-800/80"> · took {formatDuration(run.elapsed_s)}</span>}
+        {run.priority > 0 && <span className="text-emerald-800/80"> · {run.priority} need your attention first</span>}
+      </span>
+      {run.priority > 0 && (
+        <button onClick={onAttention} className="rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-emerald-800 ring-1 ring-emerald-200 hover:bg-emerald-50">
+          Review those first
+        </button>
+      )}
+      <button onClick={onClose} className="rounded p-1 text-emerald-700/70 hover:bg-emerald-100 hover:text-emerald-900" aria-label="Dismiss">
+        <X className="size-4" />
+      </button>
     </div>
   );
 }

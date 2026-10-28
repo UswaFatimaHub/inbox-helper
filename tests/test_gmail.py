@@ -52,6 +52,8 @@ class FakeMailbox:
         yield list(self.g.messages)
 
     def get(self, gmail_id):
+        if self.g.on_get:
+            self.g.on_get(gmail_id)
         return self.g.messages[gmail_id]
 
     def create_draft(self, raw, thread_id):
@@ -79,6 +81,7 @@ class FakeGoogle:
         self.queries: list[str] = []
         self.draft_error: str | None = None
         self.expired = False
+        self.on_get = None  # called with the id before each message download
 
     def exchange_code(self, config, code):
         assert code == "good-code"
@@ -208,6 +211,19 @@ def test_fetch_imports_new_messages_once(client, google, db):
     google.messages["g3"] = gmail_msg("g3", "Any news?")
     assert [i["message_id"] for i in fetch_run(client)] == ["g3"]
     assert client.get("/api/gmail/status").json()["last_fetch_at"]
+
+
+def test_status_shows_the_progress_of_a_running_fetch(client, google, service):
+    connect(client)
+    google.messages = {f"g{n}": gmail_msg(f"g{n}", f"Question number {n}?") for n in range(5)}
+    seen = []
+    google.on_get = lambda _: seen.append(service.status()["fetch"])
+    assert client.get("/api/gmail/status").json()["fetch"] is None
+    items = fetch_run(client)
+    assert {i["message_id"] for i in items} == set(google.messages)  # parallel downloads, nothing lost
+    assert {p["stage"] for p in seen} == {"downloading"} and all(p["found"] == 5 for p in seen)
+    assert all(0 <= p["downloaded"] < 5 for p in seen) and seen[0]["started_at"]
+    assert client.get("/api/gmail/status").json()["fetch"] is None
 
 
 def test_messages_that_fail_validation_are_not_fetched_again(client, google, db):

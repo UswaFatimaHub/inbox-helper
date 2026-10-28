@@ -26,8 +26,9 @@ import re
 import secrets
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from email.message import EmailMessage
@@ -53,6 +54,7 @@ CALLBACK_PATH = "/api/gmail/callback"
 DEFAULT_QUERY = "in:inbox -from:me newer_than:30d"
 MAX_FETCH = 50        # messages per "Fetch new emails"; the next click takes the next ones
 MAX_LIST_PAGES = 10   # pages of 100 ids scanned per fetch while skipping messages imported before
+DOWNLOAD_THREADS = 8  # parallel message downloads; well inside Gmail's per-user quota (messages.get = 5 units)
 
 
 class GmailError(Exception):
@@ -338,6 +340,16 @@ def build_reply(gm: GmailMessage, mailbox: str, text: str) -> str:
 
 
 # ---- the connected inbox ------------------------------------------------------------------------------------
+@dataclass
+class FetchProgress:
+    """How far the running "Fetch new emails" has got, for the UI to poll via /api/gmail/status. In memory: one
+    web process does the fetching (a second fetch is refused while one runs)."""
+    stage: str = "searching"  # searching (listing ids) | downloading | queueing (validating, creating the run)
+    found: int = 0
+    downloaded: int = 0
+    started_at: str = field(default_factory=lambda: iso(utcnow()))
+
+
 class GmailService:
     """One connected mailbox per deployment: GMAIL_ACCOUNT, a dedicated test inbox during the pilot."""
 
@@ -347,6 +359,7 @@ class GmailService:
         self.google = google or GoogleApi()
         self._access: tuple[str, float] | None = None  # cached access token and its expiry
         self.fetch_lock = threading.Lock()
+        self.fetching: FetchProgress | None = None  # set while a fetch runs
 
     @property
     def enabled(self) -> bool:
@@ -357,7 +370,8 @@ class GmailService:
 
     def status(self) -> dict:
         d = {"enabled": self.enabled, "missing": self.config.missing, "account": self.config.account,
-             "connected": False, "connected_by": None, "connected_at": None, "last_fetch_at": None, "error": None}
+             "connected": False, "connected_by": None, "connected_at": None, "last_fetch_at": None, "error": None,
+             "fetch": asdict(self.fetching) if self.fetching else None}
         if self.enabled:
             with self.db.Session() as s:
                 if acc := self._account(s):
@@ -433,15 +447,25 @@ class GmailService:
     # ---- import ---------------------------------------------------------------------------------------------
     def fetch_new(self) -> list[ParsedEmail]:
         """Up to MAX_FETCH messages matching GMAIL_QUERY that were not imported before, newest first."""
+        progress = self.fetching or FetchProgress()
         with self._gmail() as mailbox:
             new: list[str] = []
             for page in mailbox.list_ids(self.config.query):
                 with self.db.Session() as s:
                     known = set(s.scalars(select(GmailMessage.gmail_id).where(GmailMessage.gmail_id.in_(page))))
                 new += [i for i in page if i not in known]
+                progress.found = min(len(new), MAX_FETCH)
                 if len(new) >= MAX_FETCH:
                     break
-            emails = [parse_message(mailbox.get(i)) for i in new[:MAX_FETCH]]
+            progress.stage = "downloading"
+
+            def download(gmail_id: str) -> ParsedEmail:
+                email = parse_message(mailbox.get(gmail_id))
+                progress.downloaded += 1  # only a progress display; a lost increment would not matter
+                return email
+
+            with ThreadPoolExecutor(DOWNLOAD_THREADS) as pool:
+                emails = list(pool.map(download, new[:MAX_FETCH]))  # map keeps the newest-first order
         with self.db.write_lock, self.db.Session() as s:
             if acc := self._account(s):
                 acc.last_fetch_at = utcnow()
@@ -552,6 +576,7 @@ def gmail_router(service: GmailService, start_run: Callable[..., int]) -> APIRou
         require_setup()
         if not service.fetch_lock.acquire(blocking=False):
             raise HTTPException(409, "Emails are already being fetched.")
+        service.fetching = FetchProgress()
         try:
             try:
                 emails = service.fetch_new()
@@ -559,6 +584,7 @@ def gmail_router(service: GmailService, start_run: Callable[..., int]) -> APIRou
                 raise HTTPException(409 if e.reconnect else 502, str(e))
             if not emails:
                 return {"id": None, "imported": 0, "errors": []}
+            service.fetching.stage = "queueing"
             loaded = validate_records([e.record() for e in emails])
             rows = [e.row() for e in emails]
             errors = [{"row": e.row, "message_id": e.message_id, "error": e.error} for e in loaded.errors]
@@ -568,6 +594,7 @@ def gmail_router(service: GmailService, start_run: Callable[..., int]) -> APIRou
             run_id = start_run(loaded, f"Gmail: {service.config.account}", rows)
             return {"id": run_id, "imported": len(loaded.messages), "errors": errors}
         finally:
+            service.fetching = None
             service.fetch_lock.release()
 
     return router

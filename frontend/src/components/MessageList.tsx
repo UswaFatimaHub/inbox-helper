@@ -12,7 +12,7 @@ const TABS: { key: StatusFilter; label: string }[] = [
   { key: "all", label: "All" },
 ];
 
-export function MessageList({ items, selectedId, onSelect, status, onStatus, statusCounts, query, onQuery, emptyHint }: {
+export function MessageList({ items, selectedId, onSelect, status, onStatus, statusCounts, query, onQuery, placeholders, emptyHint }: {
   items: Item[];
   selectedId: number | null;
   onSelect: (id: number) => void;
@@ -21,6 +21,7 @@ export function MessageList({ items, selectedId, onSelect, status, onStatus, sta
   statusCounts: Record<StatusFilter, number>;
   query: string;
   onQuery: (q: string) => void;
+  placeholders: number; // drafts still being written: shown as shimmering rows
   emptyHint: string;
 }) {
   return (
@@ -53,20 +54,21 @@ export function MessageList({ items, selectedId, onSelect, status, onStatus, sta
       </div>
 
       <ul className="pane min-h-0 flex-1 overflow-y-auto p-2">
-        {items.length === 0 && <li className="px-4 py-12 text-center text-sm text-slate-400">{emptyHint}</li>}
+        {items.length === 0 && placeholders === 0 && <li className="px-4 py-12 text-center text-sm text-slate-400">{emptyHint}</li>}
         {items.map((it) => {
           const active = it.id === selectedId;
+          const attention = it.priority_review && it.review_status === "pending";
           return (
-            <li key={it.id}>
+            <li key={it.id} className="animate-row">
               <button
                 onClick={() => onSelect(it.id)}
                 className={cx(
-                  "relative mb-1 w-full rounded-xl px-3.5 py-3 text-left transition-all",
-                  active ? "bg-indigo-50/70 ring-1 ring-indigo-200" : "hover:bg-white hover:shadow-sm hover:ring-1 hover:ring-slate-200",
+                  "relative mb-0.5 w-full rounded-lg px-3.5 py-2.5 text-left transition-colors",
+                  active ? "bg-indigo-50/80 ring-1 ring-indigo-200" : "hover:bg-white hover:ring-1 hover:ring-slate-200",
                 )}
               >
-                {it.priority_review && it.review_status === "pending" && (
-                  <span className="absolute top-3.5 left-1 h-6 w-1 rounded-full bg-rose-400" aria-label="Needs attention" />
+                {attention && (
+                  <span className="absolute top-3 left-1 h-5 w-1 rounded-full bg-rose-400" title="Needs attention" aria-label="Needs attention" />
                 )}
                 <div className="flex items-center gap-2">
                   <span className="flex-1 truncate text-sm font-semibold text-slate-900">{it.candidate_name || it.candidate_email || it.message_id}</span>
@@ -75,19 +77,18 @@ export function MessageList({ items, selectedId, onSelect, status, onStatus, sta
                   {it.review_status === "blocked" && <Ban className="size-4 text-zinc-500" />}
                   <span className="text-[11px] whitespace-nowrap text-slate-400 tabular-nums">{formatWhen(it.received_at)}</span>
                 </div>
-                <div className="mt-0.5 truncate text-[13px] text-slate-700" dir="auto">{it.subject || "(no subject)"}</div>
-                <div className="mt-0.5 line-clamp-2 text-[13px] leading-snug text-slate-500" dir="auto">{it.body}</div>
-                <div className="mt-2 flex items-center gap-1.5">
+                <div className="mt-0.5 truncate text-[13px] text-slate-700" dir="auto">
+                  {it.subject || "(no subject)"}
+                  <span className="text-slate-400"> · {it.body}</span>
+                </div>
+                <div className="mt-1.5 flex items-center gap-1.5">
                   <IntentChip intent={it.intent} />
                   {it.flags.length > 0 && (
                     <span
                       title={it.flags.map(flagLabel).join(", ")}
-                      className={cx(
-                        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-medium",
-                        it.priority_review ? "bg-rose-50 text-rose-600" : "bg-slate-100 text-slate-500",
-                      )}
+                      className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-slate-500"
                     >
-                      {it.priority_review && <AlertTriangle className="size-3" />}
+                      <AlertTriangle className={cx("size-3", attention ? "text-rose-500" : "text-slate-400")} />
                       {it.flags.length} {it.flags.length === 1 ? "flag" : "flags"}
                     </span>
                   )}
@@ -96,6 +97,17 @@ export function MessageList({ items, selectedId, onSelect, status, onStatus, sta
             </li>
           );
         })}
+        {Array.from({ length: placeholders }, (_, i) => (
+          <li key={`placeholder-${i}`} className="mb-0.5 rounded-lg px-3.5 py-2.5" aria-hidden>
+            <div className="flex items-center gap-2">
+              <div className="shimmer h-3.5 w-32 rounded" />
+              <div className="shimmer ml-auto h-3 w-16 rounded" />
+            </div>
+            <div className="shimmer mt-2 h-3 w-full rounded" />
+            <div className="shimmer mt-2.5 h-4 w-24 rounded-full" />
+          </li>
+        ))}
+        {placeholders > 0 && <li className="px-4 py-2 text-center text-xs text-slate-400">The AI is drafting the rest…</li>}
       </ul>
     </div>
   );

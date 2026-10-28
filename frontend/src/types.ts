@@ -65,6 +65,14 @@ export interface GmailStatus {
   connected_at: string | null;
   last_fetch_at: string | null;
   error: string | null; // the connection stopped working; connect again
+  fetch: FetchProgress | null; // set while "Fetch new emails" runs
+}
+
+export interface FetchProgress {
+  stage: "searching" | "downloading" | "queueing";
+  found: number;
+  downloaded: number;
+  started_at: string;
 }
 
 export interface GmailFetch {
