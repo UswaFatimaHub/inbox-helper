@@ -51,13 +51,16 @@ export function Button({
   );
 }
 
+// Only the quarantine groups get a coloured chip; every other intent is told apart by its dot alone.
+const LOUD_INTENTS = new Set(["manipulation_attempt", "blocked_sender"]);
+
 export function IntentChip({ intent, muted }: { intent: string; muted?: boolean }) {
   const style = INTENT_STYLES[intent] ?? INTENT_STYLES.other;
   return (
     <span
       className={cx(
-        "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset whitespace-nowrap",
-        muted ? "bg-white text-slate-500 ring-slate-200" : style.chip,
+        "inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset whitespace-nowrap",
+        LOUD_INTENTS.has(intent) && !muted ? style.chip : muted ? "bg-white text-slate-500 ring-slate-200" : "bg-white text-slate-700 ring-slate-200",
       )}
     >
       <span className={cx("size-1.5 rounded-full", style.dot)} />
@@ -102,6 +105,31 @@ export function StatusPill({ status }: { status: ReviewStatus }) {
   );
 }
 
+/** Top of a page: a small mono label, the title, and one line on what the page is for. */
+export function PageHeader({ eyebrow, title, subtitle, actions }: {
+  eyebrow: string;
+  title: string;
+  subtitle?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+      <div className="min-w-0">
+        <p className="microlabel !text-indigo-500/80">{eyebrow}</p>
+        <h1 className="mt-1 text-[26px] leading-8 font-semibold tracking-tight text-slate-950">{title}</h1>
+        {subtitle && <p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-500">{subtitle}</p>}
+      </div>
+      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
+/** Small status light: good / busy / warn / crit / off. */
+export function Led({ tone, className }: { tone: "good" | "busy" | "warn" | "crit" | "off"; className?: string }) {
+  const colour = { good: "bg-emerald-500", busy: "bg-indigo-500 animate-blink", warn: "bg-amber-500", crit: "bg-rose-500", off: "bg-slate-300" }[tone];
+  return <span className={cx("led", colour, className)} />;
+}
+
 export function Card({ title, icon, actions, children, className }: {
   title?: ReactNode;
   icon?: ReactNode;
@@ -110,10 +138,10 @@ export function Card({ title, icon, actions, children, className }: {
   className?: string;
 }) {
   return (
-    <section className={cx("rounded-2xl bg-white ring-1 ring-slate-200/80 shadow-[0_1px_2px_rgba(16,24,40,0.04)]", className)}>
+    <section className={cx("card", className)}>
       {title && (
         <header className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-100 px-5 py-2">
-          <h3 className="flex items-center gap-2 text-sm font-medium text-slate-600 [&_svg]:text-slate-400">
+          <h3 className="microlabel flex items-center gap-2 [&_svg]:text-slate-400">
             {icon}
             {title}
           </h3>

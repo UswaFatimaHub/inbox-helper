@@ -32,7 +32,7 @@ M030,accommodation_request,sensitive,"medical, confidential"
 M031,other,ambiguous,no way to know
 M032,general_question|application_status,,buried ask: move application to HR Coordinator
 M033,application_status,,exact duplicate body of M001 (different sender)
-M034,other,unsupported_request,"spam, not a candidate"
+M034,no_reply_needed|other,,"spam, not a candidate: no reply needed"
 M035,interview_scheduling,needs_info_not_available,must not confirm a time it cannot see
 M036,application_status,,must not invent a decision
 M037,interview_scheduling|application_status,non_english,Urdu script

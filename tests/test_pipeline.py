@@ -52,6 +52,15 @@ def test_every_message_gets_one_result_in_input_order():
     assert all(r.review_status == "pending" and r.intent == "application_status" for r in results)
 
 
+def test_no_reply_needed_gets_no_draft_and_waits_for_a_reviewer():
+    def answer(ids):
+        return [{**good_item(i, "no_reply_needed"), "flags": ["unsupported_request"], "reason": "automated notice",
+                 "draft_reply": "Thanks, this inbox is for candidates."} for i in ids]
+    [r] = run([lane("a", answer)], n=1)
+    assert r.intent == "no_reply_needed" and r.draft_reply == "" and r.review_status == "pending"
+    assert r.flags == [] and not r.priority_review  # a suggestion to close, not a message to rush
+
+
 def test_failing_lane_falls_back_to_other_lane():
     broken = lane("broken", lambda ids: ProviderError("HTTP 503"))
     healthy = lane("healthy", lambda ids: [good_item(i) for i in ids])

@@ -19,6 +19,10 @@ def test_parse_ignores_items_without_a_draft():
         parse_batch_response('{"results": [{"message_id": "A", "draft_reply": "  "}]}', ["A"])
 
 
+def test_parse_accepts_no_draft_when_no_reply_is_needed():
+    assert "A" in parse_batch_response('{"results": [{"message_id": "A", "intent": "no_reply_needed", "draft_reply": ""}]}', ["A"])
+
+
 @pytest.mark.parametrize("text", ["not json", '{"results": "nope"}', "[]"])
 def test_parse_rejects_unusable_output(text):
     with pytest.raises(ParseError):

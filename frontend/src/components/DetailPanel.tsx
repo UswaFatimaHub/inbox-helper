@@ -1,13 +1,16 @@
 import { useState } from "react";
 import {
-  AlertTriangle, ArrowLeft, Ban, Check, ChevronDown, ChevronUp, Copy, History, Mail, RefreshCw, RotateCcw, Save,
+  AlertTriangle, ArrowLeft, Ban, Check, ChevronDown, ChevronUp, Copy, History, Mail, MailX, RefreshCw, RotateCcw, Save,
   ShieldAlert, Sparkles, Undo2, X,
 } from "lucide-react";
 import { flagSeverity, formatWhen, initials, shortModel } from "../lib/labels";
 import type { Item, Meta } from "../types";
 import { Button, Card, FlagChip, IntentChip, StatusPill, cx } from "./ui";
 
-export type Action = "save" | "approve" | "reject" | "reopen" | "regenerate" | "block" | "unblock" | "draft";
+/** Review note recorded when a reviewer agrees that a message needs no reply. */
+export const NO_REPLY_NOTE = "No reply needed";
+
+export type Action ="save" | "approve" | "reject" | "reopen" | "regenerate" | "block" | "unblock" | "draft";
 
 const SEVERITY_ORDER = { high: 0, attention: 1, info: 2 } as const;
 
@@ -64,6 +67,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
   const flags = [...item.flags].sort((a, b) => SEVERITY_ORDER[flagSeverity(a)] - SEVERITY_ORDER[flagSeverity(b)]);
   const high = flags.filter((f) => flagSeverity(f) === "high");
   const quarantined = item.intent === "manipulation_attempt";
+  const noReply = item.intent === "no_reply_needed";
   const email = item.candidate_email.trim().toLowerCase();
   const senderBlocked = !!email && blockedEmails.has(email);
 
@@ -248,8 +252,40 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
           </section>
         )}
 
+        {pending && noReply && (
+          <section className="card">
+            <header className="flex items-center gap-2 border-b border-slate-100 px-5 py-3">
+              <MailX className="size-4 text-slate-400" />
+              <h3 className="microlabel">AI suggests: no reply needed</h3>
+            </header>
+            <div className="space-y-4 px-5 py-4 text-sm text-slate-600">
+              <p>
+                The AI thinks nobody is waiting for an answer, so it drafted nothing. Check the message above: if a person
+                is asking something, write a reply instead.
+              </p>
+              <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:items-center">
+                {!writeAnyway && (
+                  <button onClick={() => setWriteAnyway(true)} className="text-left text-xs text-slate-500 underline-offset-2 hover:text-slate-800 hover:underline">
+                    Needs a reply? Write one instead
+                  </button>
+                )}
+                <div className="flex-1 text-xs text-amber-700 sm:text-center">{needName && "Sign in to review."}</div>
+                <Button
+                  variant="primary"
+                  icon={<Check className="size-4" />}
+                  disabled={needName || !!busy}
+                  loading={busy === "reject"}
+                  onClick={() => run("reject", { note: NO_REPLY_NOTE })}
+                >
+                  Close, no reply
+                </Button>
+              </div>
+            </div>
+          </section>
+        )}
+
         {pending ? (
-          (!quarantined || writeAnyway) && <Card
+          ((!quarantined && !noReply) || writeAnyway) && <Card
             title="Reply"
             actions={
               <div className="flex items-center gap-1">
@@ -364,7 +400,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
           </section>
         ) : (
           <Card
-            title={item.review_status === "approved" ? "Approved reply" : "Rejected"}
+            title={item.review_status === "approved" ? "Approved reply" : item.review_note === NO_REPLY_NOTE ? "Closed · no reply" : "Rejected"}
             actions={
               <div className="flex gap-1">
                 {item.review_status === "approved" && item.final_reply && (
@@ -386,7 +422,7 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
               <p className="text-sm text-slate-600">{item.review_note ? `Reason: ${item.review_note}` : "No reason given."}</p>
             )}
             <p className="mt-3 text-xs text-slate-500">
-              {item.review_status === "approved" ? "Approved" : "Rejected"} by <span className="font-medium text-slate-700">{item.reviewed_by}</span> · {formatWhen(item.reviewed_at)}
+              {item.review_status === "approved" ? "Approved" : item.review_note === NO_REPLY_NOTE ? "Closed" : "Rejected"} by <span className="font-medium text-slate-700">{item.reviewed_by}</span> · {formatWhen(item.reviewed_at)}
               {item.review_status === "approved" &&
                 (item.gmail ? " · not sent: send the Gmail draft yourself." : " · not sent: copy it or export the approved CSV.")}
             </p>

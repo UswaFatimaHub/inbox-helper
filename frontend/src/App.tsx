@@ -1,23 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, Loader2, LogIn, MousePointerClick, ShieldCheck, Sparkles, X } from "lucide-react";
+import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, Download, Loader2, LogIn, MousePointerClick, Sparkles, X } from "lucide-react";
 import { api, SignedOutError } from "./api";
 import { BlocklistDialog } from "./components/BlocklistDialog";
-import { DetailPanel, type Action } from "./components/DetailPanel";
-import { Header } from "./components/Header";
+import { DetailPanel, NO_REPLY_NOTE, type Action } from "./components/DetailPanel";
 import { MessageList, type StatusFilter } from "./components/MessageList";
-import { NewRunDialog, NewRunPanel } from "./components/NewRunDialog";
-import { Sidebar, type Group } from "./components/Sidebar";
+import { LogoMark, Shell, type Page } from "./components/Shell";
+import { Groups, NO_REPLY, type Group } from "./components/Sidebar";
 import { cx } from "./components/ui";
-import { INTENT_LABELS, formatDuration, intentLabel, runSource } from "./lib/labels";
+import { INTENT_LABELS, formatDuration, intentLabel } from "./lib/labels";
 import { useNow } from "./lib/useNow";
-import type { BlockedSender, Item, Me, Meta, Run } from "./types";
+import { Overview, type QueueView } from "./pages/Overview";
+import type { BlockedSender, GmailStatus, Item, Me, Meta, Run } from "./types";
+
+/** Page from the address bar: "/" is the overview, "?view=queue&item=12" the review queue. */
+function readLocation() {
+  const params = new URLSearchParams(location.search);
+  const item = Number(params.get("item")) || null;
+  return { page: (params.get("view") === "queue" || item ? "review" : "home") as Page, item };
+}
+
+const isActive = (r: Run) => r.status === "queued" || r.status === "running";
 
 export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null);
-  const [runs, setRuns] = useState<Run[] | null>(null);
-  const [runId, setRunId] = useState<number | null>(null);
-  const [items, setItems] = useState<Item[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [items, setItems] = useState<Item[] | null>(null);
+  const [page, setPage] = useState<Page>(() => readLocation().page);
+  const [selectedId, setSelectedId] = useState<number | null>(() => readLocation().item);
   const [detail, setDetail] = useState<Item | null>(null);
   const [group, setGroup] = useState<Group>("all");
   const [status, setStatus] = useState<StatusFilter>("pending");
@@ -25,19 +34,18 @@ export default function App() {
   const [user, setUser] = useState<Me | null>(null);
   const [signedOut, setSignedOut] = useState(false);
   const reviewer = user?.name ?? "";
-  const [dialog, setDialog] = useState(false);
+  const [gmail, setGmail] = useState<GmailStatus | null>(null);
   const [blocked, setBlocked] = useState<BlockedSender[]>([]);
   const [blocklistOpen, setBlocklistOpen] = useState(false);
   const [toast, setToast] = useState<{ msg: string; tone: "ok" | "error" } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [pollKey, setPollKey] = useState(0); // bumped to resume polling after a retry
-  const [finishedRun, setFinishedRun] = useState<number | null>(null); // run that finished while watched
+  const [finished, setFinished] = useState<{ count: number; seconds: number } | null>(null); // drafting just ended
   const toastTimer = useRef<number | undefined>(undefined);
 
   const notify = useCallback((msg: string, tone: "ok" | "error" = "ok") => {
     setToast({ msg, tone });
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 2600);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
   }, []);
 
   // any API call that gets a 401 (session expired, removed from the allowed list) shows the sign-in screen
@@ -52,88 +60,83 @@ export default function App() {
     setSignedOut(true);
   };
 
-  // initial load; ?run=&item= deep-link to a message
-  const linkedItem = useRef<number | null>(Number(new URLSearchParams(location.search).get("item")) || null);
-  useEffect(() => {
-    Promise.all([api.me(), api.meta(), api.runs(), api.blocked()])
-      .then(([u, m, r, b]) => {
-        setUser(u);
-        setMeta(m);
-        setRuns(r);
-        setBlocked(b);
-        const params = new URLSearchParams(location.search);
-        const linked = Number(params.get("run"));
-        if (r.length) setRunId(r.some((x) => x.id === linked) ? linked : r[0].id);
-        if (params.get("gmail") === "connected") {
-          // back from Google's consent screen: offer the fetch straight away
-          notify("Gmail connected");
-          if (r.length) setDialog(true);
-        }
-      })
-      .catch((e) => {
-        if (!(e instanceof SignedOutError)) setLoadError((e as Error).message);
-      });
+  const loadGmail = useCallback(() => {
+    api.gmailStatus().then(setGmail).catch(() => setGmail(null));
   }, []);
 
-  useEffect(() => {
-    if (runId == null) return;
-    const params = new URLSearchParams({ run: String(runId) });
-    if (selectedId != null) params.set("item", String(selectedId));
-    history.replaceState(null, "", `?${params}`);
-  }, [runId, selectedId]);
-
-  const run = runs?.find((r) => r.id === runId) ?? null;
-
-  const refresh = useCallback(async (id: number) => {
-    const [r, its] = await Promise.all([api.run(id), api.items(id)]);
-    setRuns((prev) => (prev ? prev.map((x) => (x.id === id ? r : x)) : [r]));
+  const reload = useCallback(async () => {
+    const [r, its] = await Promise.all([api.runs(), api.queue()]);
+    setRuns(r);
     setItems(its);
     return r;
   }, []);
 
   useEffect(() => {
-    if (runId == null) return;
-    setItems([]);
-    setSelectedId(linkedItem.current);
-    linkedItem.current = null;
-  }, [runId]);
-
-  // load items for the chosen run; poll while it is queued or running
-  useEffect(() => {
-    if (runId == null) return;
-    let stop = false;
-    let timer: number | undefined;
-    let wasActive = false;
-    const tick = async () => {
-      try {
-        const r = await refresh(runId);
-        if (stop) return;
-        if (isActive(r)) {
-          wasActive = true;
-          timer = window.setTimeout(tick, 1500);
-        } else if (wasActive && r.status === "done") {
-          setFinishedRun(r.id);
+    Promise.all([api.me(), api.meta(), api.blocked(), reload()])
+      .then(([u, m, b]) => {
+        setUser(u);
+        setMeta(m);
+        setBlocked(b);
+        if (new URLSearchParams(location.search).get("gmail") === "connected") {
+          notify("Gmail connected · fetch new emails when you're ready"); // back from Google's consent screen
+          setPage("home");
         }
-      } catch (e) {
-        if (!stop) notify((e as Error).message, "error");
-      }
-    };
-    tick();
-    return () => {
-      stop = true;
-      window.clearTimeout(timer);
-    };
-  }, [runId, pollKey, refresh, notify]);
+      })
+      .catch((e) => {
+        if (!(e instanceof SignedOutError)) setLoadError((e as Error).message);
+      });
+    loadGmail();
+  }, []);
 
-  const retryRun = async (id: number) => {
-    try {
-      await api.retry(id);
-      notify("Run queued again; messages that already have a draft are kept");
-      setPollKey((k) => k + 1);
-    } catch (e) {
-      notify((e as Error).message, "error");
+  // while anything is being drafted, refresh the queue so new drafts show up as they finish
+  const active = useMemo(() => runs.filter(isActive), [runs]);
+  const watching = useRef<Run[]>([]); // the batches being drafted, kept after they finish for the ready banner
+  useEffect(() => {
+    if (active.length) watching.current = active;
+  }, [active]);
+  useEffect(() => {
+    if (!active.length) return;
+    let live = true;
+    const t = window.setInterval(async () => {
+      try {
+        const r = await reload();
+        if (!live || r.some(isActive)) return;
+        const done = r.filter((x) => watching.current.some((w) => w.id === x.id) && x.status === "done");
+        if (done.length) setFinished({ count: done.reduce((n, x) => n + x.total, 0), seconds: Math.max(...done.map((x) => x.elapsed_s ?? 0)) });
+      } catch (e) {
+        if (live) notify((e as Error).message, "error");
+      }
+    }, 1500);
+    return () => {
+      live = false;
+      window.clearInterval(t);
+    };
+  }, [active.length > 0, reload, notify]);
+
+  // keep the address bar in step: a new page is a history entry, a new message is not
+  const shownPage = useRef(page);
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (page === "review") {
+      params.set("view", "queue");
+      if (selectedId != null) params.set("item", String(selectedId));
     }
-  };
+    const url = params.size ? `?${params}` : location.pathname;
+    if (shownPage.current !== page) history.pushState(null, "", url);
+    else history.replaceState(null, "", url);
+    shownPage.current = page;
+  }, [page, selectedId]);
+
+  useEffect(() => {
+    const onPop = () => {
+      const loc = readLocation();
+      shownPage.current = loc.page;
+      setPage(loc.page);
+      setSelectedId(loc.item);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   // load detail (with history) for the selected item
   useEffect(() => {
@@ -145,13 +148,14 @@ export default function App() {
     };
   }, [selectedId, notify]);
 
+  const all = items ?? [];
   const statusCounts = useMemo(() => {
-    const c: Record<StatusFilter, number> = { pending: 0, approved: 0, rejected: 0, blocked: 0, all: items.length };
-    for (const i of items) c[i.review_status]++;
+    const c: Record<StatusFilter, number> = { pending: 0, approved: 0, rejected: 0, blocked: 0, all: all.length };
+    for (const i of all) c[i.review_status]++;
     return c;
-  }, [items]);
+  }, [all]);
 
-  const byStatus = useMemo(() => (status === "all" ? items : items.filter((i) => i.review_status === status)), [items, status]);
+  const byStatus = useMemo(() => (status === "all" ? all : all.filter((i) => i.review_status === status)), [all, status]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -172,6 +176,7 @@ export default function App() {
 
   // J / K keyboard navigation (ignored while typing)
   useEffect(() => {
+    if (page !== "review") return;
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || e.metaKey || e.ctrlKey) return;
@@ -180,7 +185,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go]);
+  }, [go, page]);
 
   const unblock = async (email: string) => {
     try {
@@ -206,22 +211,22 @@ export default function App() {
               ? await api.gmailDraft(detail.id)
               : await api.review(detail.id, { action, ...payload });
       if (action === "block") {
-        // blocking closes every pending message from this sender, so reload the list and the blocklist
+        // blocking closes every pending message from this sender, so reload the queue and the blocklist
         setBlocked(await api.blocked());
-        if (runId) setItems(await api.items(runId));
+        setItems(await api.queue());
       }
       setDetail(updated);
-      setItems((prev) => prev.map((i) => (i.id === updated.id ? { ...updated, events: undefined } : i)));
-      const gmail = updated.gmail;
+      setItems((prev) => prev?.map((i) => (i.id === updated.id ? { ...updated, events: undefined } : i)) ?? null);
+      const gm = updated.gmail;
       const messages = {
         save: "Edit saved",
-        approve: gmail?.draft_id ? "Reply approved · Gmail draft created" : "Reply approved",
-        reject: "Draft rejected",
-        reopen: gmail && !gmail.draft_error ? "Reopened for review · Gmail draft deleted" : "Reopened for review",
+        approve: gm?.draft_id ? "Reply approved · Gmail draft created" : "Reply approved",
+        reject: payload?.note === NO_REPLY_NOTE ? "Closed without a reply" : "Draft rejected",
+        reopen: gm && !gm.draft_error ? "Reopened for review · Gmail draft deleted" : "Reopened for review",
         regenerate: "New draft ready", block: `Blocked ${updated.candidate_email}`, unblock: "", draft: "Gmail draft created",
       };
-      if (gmail?.draft_error && (action === "approve" || action === "reopen" || action === "draft")) {
-        notify(action === "approve" ? `Approved, but the Gmail draft failed: ${gmail.draft_error}` : gmail.draft_error, "error");
+      if (gm?.draft_error && (action === "approve" || action === "reopen" || action === "draft")) {
+        notify(action === "approve" ? `Approved, but the Gmail draft failed: ${gm.draft_error}` : gm.draft_error, "error");
       } else {
         notify(messages[action]);
       }
@@ -231,48 +236,70 @@ export default function App() {
         const after = rest.find((i) => visible.indexOf(i) > index) ?? rest[0];
         if (after && status === "pending") setSelectedId(after.id);
       }
-      if (runId) api.run(runId).then((r) => setRuns((prev) => prev?.map((x) => (x.id === r.id ? r : x)) ?? null));
     } catch (e) {
       notify((e as Error).message, "error");
     }
   };
 
-  const onStarted = (id: number) => {
-    setDialog(false);
-    setStatus("pending");
-    setGroup("all");
-    api.runs().then((r) => {
-      setRuns(r);
-      setRunId(id);
-    });
+  const openQueue = (view: QueueView) => {
+    setGroup(view.group);
+    setStatus(view.status);
+    setQuery("");
+    setSelectedId(null);
+    setFinished(null);
+    setPage("review");
+  };
+
+  const onStarted = (summary: string) => {
+    notify(summary);
+    setFinished(null);
+    reload().catch(() => undefined);
+  };
+
+  const retry = async (id: number) => {
+    try {
+      await api.retry(id);
+      notify("Queued again; messages that already have a draft are kept");
+      await reload();
+    } catch (e) {
+      notify((e as Error).message, "error");
+    }
   };
 
   const systemIntents = meta?.system_intents ?? ["manipulation_attempt", "blocked_sender"];
-  const intents = (meta ? Object.keys(meta.intents) : Object.keys(INTENT_LABELS)).filter((i) => !systemIntents.includes(i));
+  const intents = (meta ? Object.keys(meta.intents) : Object.keys(INTENT_LABELS)).filter((i) => !systemIntents.includes(i) && i !== NO_REPLY);
   const blockedEmails = useMemo(() => new Set(blocked.map((b) => b.email)), [blocked]);
   const chooseGroup = (g: Group) => {
     setGroup(g);
     if (g === "blocked_sender") setStatus("all"); // blocked messages are closed, so "To review" would hide them
   };
-  const showAttention = () => {
-    setGroup("attention");
-    setStatus("pending");
-    setFinishedRun(null);
-  };
+  const latestFailed = runs[0]?.status === "failed" ? runs[0] : null;
   // placeholder rows for drafts still being written (only in views where new drafts would show up)
-  const placeholders = run && isActive(run) && status !== "approved" && status !== "rejected" && group === "all" && !query
-    ? Math.min(3, run.total - run.processed)
-    : 0;
+  const remaining = active.reduce((n, r) => n + r.total - r.processed, 0);
+  const placeholders = status !== "approved" && status !== "rejected" && group === "all" && !query ? Math.min(3, remaining) : 0;
+
+  const banners = (
+    <>
+      {active.length > 0 && <Drafting runs={active} />}
+      {finished && !active.length && <ReadyBanner {...finished} onReview={() => openQueue({ group: "all", status: "pending" })} onClose={() => setFinished(null)} />}
+      {latestFailed && !active.length && (
+        <div className="flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-800">
+          <AlertCircle className="size-4" /> The last batch stopped: {latestFailed.error}
+          <button onClick={() => retry(latestFailed.id)} className="ml-auto font-medium text-indigo-700 hover:underline">Try again</button>
+        </div>
+      )}
+    </>
+  );
 
   if (loadError) {
     return (
       <div className="grid h-full place-items-center p-6">
-        <div className="flex max-w-md gap-3 rounded-2xl bg-white p-6 text-sm text-slate-600 shadow-sm ring-1 ring-slate-200">
+        <div className="card flex max-w-md gap-3 p-6 text-sm text-slate-600">
           <AlertCircle className="size-5 shrink-0 text-rose-500" />
           <div>
             <div className="font-semibold text-slate-900">Can't reach the Inbox Helper server</div>
             <p className="mt-1">{loadError}</p>
-            <p className="mt-2 text-slate-500">Start it with <code className="rounded bg-slate-100 px-1">uvicorn inbox_helper.server:app</code> and reload.</p>
+            <p className="mt-2 text-slate-500">Start it with <code className="rounded bg-slate-100 px-1 font-mono">uvicorn inbox_helper.server:app</code> and reload.</p>
           </div>
         </div>
       </div>
@@ -281,112 +308,108 @@ export default function App() {
 
   if (signedOut) return <SignIn />;
 
+  if (items === null) {
+    return (
+      <div className="grid h-full place-items-center text-slate-400">
+        <Loader2 className="size-6 animate-spin" />
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-full flex-col overflow-x-hidden">
-      <Header
-        runs={runs ?? []}
-        runId={runId}
-        onSelectRun={setRunId}
+    <>
+      <Shell
+        page={page}
+        onPage={(p) => (p === "review" ? openQueue({ group: "all", status: "pending" }) : setPage(p))}
+        canReview
+        toReview={statusCounts.pending}
+        groups={<Groups items={byStatus} intents={intents} systemIntents={systemIntents} group={group} onGroup={chooseGroup} />}
+        blockedCount={blocked.length}
+        onBlocklist={() => setBlocklistOpen(true)}
+        gmail={gmail}
         user={user}
         onSignOut={signOut}
-        onNewRun={() => setDialog(true)}
-      />
-
-      {runs === null ? (
-        <div className="grid flex-1 place-items-center text-slate-400">
-          <Loader2 className="size-6 animate-spin" />
-        </div>
-      ) : runs.length === 0 ? (
-        <div className="grid flex-1 place-items-center p-4">
-          <div className="flex w-full max-w-lg flex-col items-center gap-6">
-            <div className="text-center">
-              <h1 className="text-2xl font-semibold tracking-tight">Clear your candidate inbox, safely</h1>
-              <p className="mt-2 text-slate-500">Group messages by what people want, start from an AI draft, and approve every reply yourself.</p>
-            </div>
-            <NewRunPanel inline onStarted={onStarted} />
-          </div>
-        </div>
-      ) : (
-        <>
-          {run && <RunBar run={run} counts={statusCounts} onRetry={() => retryRun(run.id)} onAttention={showAttention} />}
-          {run && finishedRun === run.id && <ReadyBanner run={run} onAttention={showAttention} onClose={() => setFinishedRun(null)} />}
-          <main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[232px_380px_1fr]">
-            <aside className="hidden min-h-0 border-r border-slate-200/80 lg:flex lg:flex-col">
-              <Sidebar
-                items={byStatus}
-                intents={intents}
-                systemIntents={systemIntents}
-                group={group}
-                onGroup={chooseGroup}
-                blockedCount={blocked.length}
-                onManageBlocklist={() => setBlocklistOpen(true)}
-              />
-            </aside>
-
-            <section className={cx("min-h-0 flex-col border-r border-slate-200/80 bg-white/40", detail ? "hidden lg:flex" : "flex")}>
-              <div className="border-b border-slate-200/80 p-3 lg:hidden">
-                <label className="relative block">
-                  <select
-                    value={group}
-                    onChange={(e) => chooseGroup(e.target.value)}
-                    className="h-9 w-full appearance-none rounded-lg bg-white px-3 text-sm ring-1 ring-slate-200 ring-inset"
-                  >
-                    <option value="all">All messages</option>
-                    <option value="attention">Needs attention</option>
-                    {[...intents, ...systemIntents].map((i) => (
-                      <option key={i} value={i}>{intentLabel(i)}</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute top-2.5 right-2.5 size-4 text-slate-400" />
-                </label>
-              </div>
-              <MessageList
-                items={visible}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                status={status}
-                onStatus={setStatus}
-                statusCounts={statusCounts}
-                query={query}
-                onQuery={setQuery}
-                placeholders={placeholders}
-                emptyHint="Nothing here. Try another group or tab."
-              />
-            </section>
-
-            <section className={cx("min-h-0", detail ? "block" : "hidden lg:block")}>
-              {detail ? (
-                <DetailPanel
-                  key={`${detail.id}:${detail.events?.length ?? 0}:${detail.draft_reply.length}`}
-                  item={detail}
-                  meta={meta}
-                  reviewer={reviewer}
-                  blockedEmails={blockedEmails}
-                  onAction={onAction}
-                  onBack={() => setSelectedId(null)}
-                  onPrev={index > 0 ? () => go(-1) : undefined}
-                  onNext={index >= 0 && index < visible.length - 1 ? () => go(1) : undefined}
-                  notify={notify}
-                />
-              ) : (
-                <div className="grid h-full place-items-center p-8 text-center">
-                  <div className="max-w-xs">
-                    <div className="mx-auto grid size-12 place-items-center rounded-2xl bg-white text-indigo-500 shadow-sm ring-1 ring-slate-200">
-                      <MousePointerClick className="size-5" />
-                    </div>
-                    <div className="mt-4 font-medium text-slate-800">Pick a message to review</div>
-                    <p className="mt-1 text-sm text-slate-500">
-                      Start with <span className="font-medium text-rose-600">Needs attention</span>. Use <kbd className="rounded bg-white px-1.5 py-0.5 text-xs ring-1 ring-slate-200">J</kbd> / <kbd className="rounded bg-white px-1.5 py-0.5 text-xs ring-1 ring-slate-200">K</kbd> to move between messages.
-                    </p>
-                  </div>
+      >
+        {page === "home" ? (
+          <Overview
+            items={all}
+            intents={intents}
+            drafting={banners}
+            gmail={gmail}
+            onGmailChange={loadGmail}
+            onStarted={onStarted}
+            onOpen={openQueue}
+          />
+        ) : (
+          <div className="flex h-full flex-col">
+            <QueueBar counts={statusCounts} attention={all.filter((i) => i.priority_review && i.review_status === "pending").length}
+              onAttention={() => openQueue({ group: "attention", status: "pending" })} />
+            {(active.length > 0 || finished || latestFailed) && <div className="space-y-2 border-b border-slate-200/80 px-4 py-3 lg:px-6">{banners}</div>}
+            <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[380px_1fr]">
+              <section className={cx("min-h-0 flex-col border-r border-slate-200/80 bg-white/60", detail ? "hidden lg:flex" : "flex")}>
+                <div className="border-b border-slate-200/80 p-3 lg:hidden">
+                  <label className="relative block">
+                    <select
+                      value={group}
+                      onChange={(e) => chooseGroup(e.target.value)}
+                      className="h-9 w-full appearance-none rounded-lg bg-white px-3 text-sm ring-1 ring-slate-200 ring-inset"
+                    >
+                      <option value="all">All messages</option>
+                      <option value="attention">Needs attention</option>
+                      {[...intents, NO_REPLY, ...systemIntents].map((i) => (
+                        <option key={i} value={i}>{intentLabel(i)}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute top-2.5 right-2.5 size-4 text-slate-400" />
+                  </label>
                 </div>
-              )}
-            </section>
-          </main>
-        </>
-      )}
+                <MessageList
+                  items={visible}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  status={status}
+                  onStatus={setStatus}
+                  statusCounts={statusCounts}
+                  query={query}
+                  onQuery={setQuery}
+                  placeholders={placeholders}
+                  emptyHint={all.length ? "Nothing here. Try another group or tab." : "The queue is empty. Fetch emails or drop a file on the overview."}
+                />
+              </section>
 
-      <NewRunDialog open={dialog} onClose={() => setDialog(false)} onStarted={onStarted} />
+              <section className={cx("min-h-0", detail ? "block" : "hidden lg:block")}>
+                {detail ? (
+                  <DetailPanel
+                    key={`${detail.id}:${detail.events?.length ?? 0}:${detail.draft_reply.length}`}
+                    item={detail}
+                    meta={meta}
+                    reviewer={reviewer}
+                    blockedEmails={blockedEmails}
+                    onAction={onAction}
+                    onBack={() => setSelectedId(null)}
+                    onPrev={index > 0 ? () => go(-1) : undefined}
+                    onNext={index >= 0 && index < visible.length - 1 ? () => go(1) : undefined}
+                    notify={notify}
+                  />
+                ) : (
+                  <div className="grid h-full place-items-center p-8 text-center">
+                    <div className="max-w-xs">
+                      <div className="mx-auto grid size-12 place-items-center rounded-2xl border border-indigo-200 bg-indigo-50/80 text-indigo-600">
+                        <MousePointerClick className="size-5" />
+                      </div>
+                      <div className="mt-4 font-medium text-slate-800">Pick a message to review</div>
+                      <p className="mt-1 text-sm text-slate-500">
+                        Start with <span className="font-medium text-rose-600">Needs attention</span>. Use <Kbd>J</Kbd> / <Kbd>K</Kbd> to move between messages.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </section>
+            </div>
+          </div>
+        )}
+      </Shell>
+
       <BlocklistDialog
         open={blocklistOpen}
         blocked={blocked}
@@ -408,84 +431,103 @@ export default function App() {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
-const isActive = (r: Run) => r.status === "queued" || r.status === "running";
+function Kbd({ children }: { children: React.ReactNode }) {
+  return <kbd className="rounded border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-xs text-slate-600 shadow-[0_1px_0_rgba(0,0,0,0.08)]">{children}</kbd>;
+}
 
-function RunBar({ run, counts, onRetry, onAttention }: {
-  run: Run;
+/** Top of the queue: how much of it is reviewed, what needs attention, and the export. */
+function QueueBar({ counts, attention, onAttention }: {
   counts: Record<StatusFilter, number>;
-  onRetry: () => void;
+  attention: number;
   onAttention: () => void;
 }) {
-  const [showErrors, setShowErrors] = useState(false);
+  const reviewed = counts.approved + counts.rejected + counts.blocked;
+  const share = (n: number) => `${counts.all ? (n / counts.all) * 100 : 0}%`;
 
   return (
-    <div className="border-b border-slate-200/80 bg-white">
-      {isActive(run) ? <RunProgress run={run} /> : <ReviewSummary run={run} counts={counts} onRetry={onRetry} onAttention={onAttention} />}
-      {run.input_errors.length > 0 && (
-        <div className="border-t border-amber-100 bg-amber-50/70 px-4 py-2 text-xs text-amber-800 lg:px-6">
-          <button onClick={() => setShowErrors((v) => !v)} className="font-medium hover:underline">
-            {run.input_errors.length} row{run.input_errors.length > 1 ? "s" : ""} in {run.input_name} could not be processed {showErrors ? "▴" : "▾"}
-          </button>
-          {showErrors && (
-            <ul className="mt-1 space-y-0.5">
-              {run.input_errors.map((e) => (
-                <li key={e.row}>Row {e.row}{e.message_id && ` (${e.message_id})`}: {e.error}</li>
-              ))}
-            </ul>
-          )}
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-slate-200/80 bg-white/75 px-4 py-3 backdrop-blur-sm lg:px-6">
+      <div className="min-w-0">
+        <p className="microlabel">Candidate inbox</p>
+        <p className="text-[15px] font-semibold tracking-tight text-slate-900">
+          Review queue <span className="font-normal text-slate-400">· {counts.pending} waiting · {counts.all} in total</span>
+        </p>
+      </div>
+      <div className="ml-auto flex items-center gap-3">
+        <div className="hidden w-48 items-center gap-2 xl:flex" title={`${counts.approved} approved · ${counts.rejected} closed · ${counts.blocked} blocked · ${counts.pending} to review`}>
+          <div className="flex h-1.5 flex-1 gap-px overflow-hidden rounded-full bg-slate-100">
+            <div className="bg-emerald-500 transition-all duration-500" style={{ width: share(counts.approved) }} />
+            <div className="bg-rose-300 transition-all duration-500" style={{ width: share(counts.rejected) }} />
+            <div className="bg-zinc-500 transition-all duration-500" style={{ width: share(counts.blocked) }} />
+          </div>
+          <span className="font-mono text-xs whitespace-nowrap text-slate-500 tabular-nums">
+            {reviewed}/{counts.all}
+          </span>
         </div>
-      )}
+        {attention > 0 && (
+          <button
+            onClick={onAttention}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-100"
+          >
+            <AlertTriangle className="size-3.5" /> {attention} need attention
+          </button>
+        )}
+        <a
+          href={api.exportUrl}
+          title="Download every approved reply as CSV"
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium text-slate-600 ring-1 ring-slate-200 hover:bg-white hover:text-slate-900"
+        >
+          <Download className="size-3.5" /> <span className="hidden sm:inline">Export approved</span>
+        </a>
+      </div>
     </div>
   );
 }
 
-const RUN_STEPS = [
+const STEPS = [
   { key: "queued", label: "Queued" },
   { key: "running", label: "Reading & drafting" },
-  { key: "done", label: "Ready to review" },
+  { key: "done", label: "In the queue" },
 ] as const;
 
-/** While the AI works: what stage it is at, how far along, how long it has taken and roughly how long is left. */
-function RunProgress({ run }: { run: Run }) {
+/** While the AI works on new messages: stage, how far along, time taken and roughly how long is left. */
+function Drafting({ runs }: { runs: Run[] }) {
   const now = useNow(true);
-  const elapsed = Math.max(0, (now - new Date(run.created_at).getTime()) / 1000);
-  const pct = run.total ? (run.processed / run.total) * 100 : 0;
+  const total = runs.reduce((n, r) => n + r.total, 0);
+  const processed = runs.reduce((n, r) => n + r.processed, 0);
+  const attention = runs.reduce((n, r) => n + r.priority, 0);
+  const quarantined = runs.reduce((n, r) => n + (r.by_intent.manipulation_attempt ?? 0), 0);
+  const queued = runs.every((r) => r.status === "queued");
+  const started = Math.min(...runs.map((r) => new Date(r.created_at).getTime()));
+  const elapsed = Math.max(0, (now - started) / 1000);
   // estimate only once a few drafts are in; batches arrive in bursts, so earlier guesses swing wildly
-  const left = run.processed >= 3 && run.processed < run.total ? ((run.total - run.processed) * elapsed) / run.processed : null;
-  const quarantined = run.by_intent.manipulation_attempt ?? 0;
-  const step = run.status === "queued" ? 0 : 1;
+  const left = processed >= 3 && processed < total ? ((total - processed) * elapsed) / processed : null;
+  const step = queued ? 0 : 1;
 
   return (
-    <div className="px-4 py-4 lg:px-6" aria-live="polite">
-      <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
-        <div className="flex min-w-0 flex-1 items-start gap-3">
-          <div className="grid size-9 shrink-0 place-items-center rounded-full bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100">
-            <Sparkles className="size-4" />
-          </div>
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-slate-900">
-              {run.status === "queued" ? "Getting ready…" : `Drafting replies · ${run.processed} of ${run.total}`}
-            </div>
-            <div className="mt-0.5 text-xs text-slate-500">
-              {run.status === "queued"
-                ? `${run.total} messages from ${runSource(run.input_name)} are waiting for the AI.`
-                : run.processed === 0
-                  ? "The AI is reading the first messages."
-                  : `So far ${run.priority} need${run.priority === 1 ? "s" : ""} attention${quarantined ? ` · ${quarantined} quarantined` : ""}. You can start reviewing as drafts arrive.`}
-            </div>
+    <div className="card p-4" aria-live="polite">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <Sparkles className="size-4 shrink-0 text-indigo-500" />
+          <div className="min-w-0 text-sm">
+            <span className="font-medium text-slate-900">
+              {queued ? `Getting ready · ${total} new message${total === 1 ? "" : "s"}` : `Drafting replies · ${processed} of ${total} new`}
+            </span>
+            {!queued && processed > 0 && (
+              <span className="text-slate-500"> · {attention} need{attention === 1 ? "s" : ""} attention{quarantined ? ` · ${quarantined} quarantined` : ""}</span>
+            )}
           </div>
         </div>
-        <ol className="hidden items-center gap-1.5 text-xs md:flex">
-          {RUN_STEPS.map((s, i) => (
+        <ol className="hidden items-center gap-1.5 md:flex">
+          {STEPS.map((s, i) => (
             <li key={s.key} className="flex items-center gap-1.5">
               {i > 0 && <span className="h-px w-4 bg-slate-200" />}
               <span
                 className={cx(
-                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5",
+                  "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[11px] tracking-[0.06em] uppercase",
                   i < step ? "text-emerald-700" : i === step ? "bg-indigo-50 font-medium text-indigo-700 ring-1 ring-indigo-200" : "text-slate-400",
                 )}
               >
@@ -496,84 +538,34 @@ function RunProgress({ run }: { run: Run }) {
             </li>
           ))}
         </ol>
-        <div className="text-right text-xs text-slate-500 tabular-nums">
-          <div className="font-medium text-slate-700">{formatDuration(elapsed)}</div>
-          <div>{left != null ? `about ${formatDuration(left)} left` : "elapsed"}</div>
+        <div className="font-mono text-xs text-slate-500 tabular-nums">
+          {formatDuration(elapsed)}
+          {left != null && <span className="text-slate-400"> · ~{formatDuration(left)} left</span>}
         </div>
       </div>
-      <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
-        {run.status === "queued" || run.processed === 0 ? (
+      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100">
+        {queued || processed === 0 ? (
           <div className="animate-indeterminate h-full w-2/5 rounded-full bg-indigo-400" />
         ) : (
-          <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-700" style={{ width: `${pct}%` }} />
+          <div className="h-full rounded-full bg-indigo-500 transition-all duration-700" style={{ width: `${(processed / total) * 100}%` }} />
         )}
       </div>
     </div>
   );
 }
 
-/** After the run: review progress as one stacked bar, and a way straight to what needs attention. */
-function ReviewSummary({ run, counts, onRetry, onAttention }: {
-  run: Run;
-  counts: Record<StatusFilter, number>;
-  onRetry: () => void;
-  onAttention: () => void;
-}) {
-  const reviewed = counts.approved + counts.rejected + counts.blocked;
-  const share = (n: number) => `${counts.all ? (n / counts.all) * 100 : 0}%`;
-
+/** Shown once when drafting of new messages finishes. */
+function ReadyBanner({ count, seconds, onReview, onClose }: { count: number; seconds: number; onReview: () => void; onClose: () => void }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5 lg:px-6">
-      <div className="min-w-0 text-sm text-slate-500">
-        <span className="font-medium text-slate-800">{run.total} messages</span>
-        {run.elapsed_s != null && <span> · drafted in {formatDuration(run.elapsed_s)}</span>}
-      </div>
-      {run.status === "failed" && (
-        <div className="flex items-center gap-2 text-xs text-rose-700">
-          <AlertCircle className="size-4" /> Run failed: {run.error}
-          <button onClick={onRetry} className="font-medium text-indigo-600 hover:underline">Retry</button>
-        </div>
-      )}
-      <div className="flex min-w-60 flex-1 items-center gap-3 sm:ml-auto sm:max-w-md">
-        <div
-          className="flex h-2 flex-1 overflow-hidden rounded-full bg-slate-100"
-          title={`${counts.approved} approved · ${counts.rejected} rejected · ${counts.blocked} blocked · ${counts.pending} to review`}
-        >
-          <div className="bg-emerald-500 transition-all duration-500" style={{ width: share(counts.approved) }} />
-          <div className="bg-rose-300 transition-all duration-500" style={{ width: share(counts.rejected) }} />
-          <div className="bg-zinc-500 transition-all duration-500" style={{ width: share(counts.blocked) }} />
-        </div>
-        <span className="text-xs whitespace-nowrap text-slate-500 tabular-nums">
-          {reviewed} of {counts.all} reviewed
-        </span>
-      </div>
-      {run.priority > 0 && (
-        <button
-          onClick={onAttention}
-          className="inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700 ring-1 ring-rose-200 hover:bg-rose-100"
-        >
-          <AlertTriangle className="size-3.5" /> {run.priority} need attention
-        </button>
-      )}
-    </div>
-  );
-}
-
-/** Shown once when the run being watched finishes. */
-function ReadyBanner({ run, onAttention, onClose }: { run: Run; onAttention: () => void; onClose: () => void }) {
-  return (
-    <div className="animate-row flex flex-wrap items-center gap-3 border-b border-emerald-100 bg-emerald-50/70 px-4 py-2.5 text-sm text-emerald-900 lg:px-6">
+    <div className="animate-row flex flex-wrap items-center gap-3 rounded-lg border border-emerald-200 bg-emerald-50/80 px-4 py-2.5 text-sm text-emerald-900">
       <CheckCircle2 className="size-4 text-emerald-600" />
       <span className="flex-1">
-        <span className="font-medium">All {run.total} drafts are ready</span>
-        {run.elapsed_s != null && <span className="text-emerald-800/80"> · took {formatDuration(run.elapsed_s)}</span>}
-        {run.priority > 0 && <span className="text-emerald-800/80"> · {run.priority} need your attention first</span>}
+        <span className="font-medium">{count} new message{count === 1 ? " is" : "s are"} in the queue</span>
+        {seconds > 0 && <span className="text-emerald-800/80"> · drafted in {formatDuration(seconds)}</span>}
       </span>
-      {run.priority > 0 && (
-        <button onClick={onAttention} className="rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-emerald-800 ring-1 ring-emerald-200 hover:bg-emerald-50">
-          Review those first
-        </button>
-      )}
+      <button onClick={onReview} className="rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-emerald-800 ring-1 ring-emerald-200 hover:bg-emerald-50">
+        Review now
+      </button>
       <button onClick={onClose} className="rounded p-1 text-emerald-700/70 hover:bg-emerald-100 hover:text-emerald-900" aria-label="Dismiss">
         <X className="size-4" />
       </button>
@@ -584,17 +576,16 @@ function ReadyBanner({ run, onAttention, onClose }: { run: Run; onAttention: () 
 function SignIn() {
   return (
     <div className="grid h-full place-items-center p-4">
-      <div className="flex w-full max-w-sm flex-col items-center gap-5 rounded-2xl bg-white p-8 text-center shadow-sm ring-1 ring-slate-200">
-        <div className="grid size-11 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-md shadow-indigo-500/25">
-          <ShieldCheck className="size-6" strokeWidth={2.2} />
-        </div>
+      <div className="card hero-grid corners flex w-full max-w-sm flex-col items-center gap-5 p-8 text-center">
+        <LogoMark size={44} />
         <div>
-          <h1 className="text-lg font-semibold tracking-tight">Inbox Helper</h1>
+          <p className="microlabel !text-indigo-500/80">Recruiting triage</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Inbox Helper</h1>
           <p className="mt-1 text-sm text-slate-500">Sign in with the Google account your team added to the reviewer list.</p>
         </div>
         <a
           href={api.loginUrl}
-          className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white hover:bg-indigo-500"
+          className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white shadow-sm shadow-indigo-600/20 hover:bg-indigo-500"
         >
           <LogIn className="size-4" /> Sign in with Google
         </a>

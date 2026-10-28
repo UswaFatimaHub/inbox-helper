@@ -16,7 +16,7 @@ export function BlocklistDialog({ open, blocked, reviewer, onClose, onUnblock }:
 
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-slate-900/30 p-4 backdrop-blur-sm" onMouseDown={onClose}>
-      <div onMouseDown={(e) => e.stopPropagation()} className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl ring-1 ring-slate-200">
+      <div onMouseDown={(e) => e.stopPropagation()} className="card w-full max-w-lg p-6 shadow-pop">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight">

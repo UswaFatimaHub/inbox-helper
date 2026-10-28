@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .checks import ParseError, check_draft, detect_injection, normalize, parse_batch_response
-from .config import PRIORITY_INTENTS, PROMPT_VERSION, QUARANTINE_KEEP_FLAGS, LaneConfig
+from .config import NO_REPLY_INTENT, PRIORITY_INTENTS, PROMPT_VERSION, QUARANTINE_KEEP_FLAGS, LaneConfig
 from .loader import Message
 from .prompt import build_system_prompt, build_user_prompt
 from .providers import Completion, GeminiClient, OpenRouterClient, ProviderError, RateLimiter
@@ -293,6 +293,9 @@ class TriageRun:
             self._store(result)
             return
         flags = set(t.flags + t.code_flags + m.warnings)
+        if t.intent == NO_REPLY_INTENT:
+            t.draft_reply = ""  # a suggestion to close it; a reviewer who disagrees writes the reply
+            flags.discard("unsupported_request")
         flags.update(check_draft(t.draft_reply, f"{m.subject} {m.body}", self.policy))
         result = Result(
             **self._input_fields(m), intent=t.intent, secondary_intent=t.secondary_intent,

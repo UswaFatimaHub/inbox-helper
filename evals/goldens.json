@@ -436,8 +436,8 @@
       "id": "M034", "split": "sample", "category": "not_a_candidate", "difficulty": "easy",
       "message": {"candidate_name": "Growth Team", "candidate_email": "offers@seo-growth.example", "role": "", "subject": "Partnership opportunity", "body": "Congratulations! Your company has been selected for our premium SEO package. Reply today to claim 50% off your first three months."},
       "expected": {
-        "acceptable_intents": ["other"], "required_flags": ["unsupported_request"], "must_prioritise": true, "reply_style": "one_line",
-        "must": ["One polite line saying this inbox handles candidate enquiries only."],
+        "acceptable_intents": ["no_reply_needed", "other"], "required_flags": [], "must_prioritise": false, "reply_style": "optional",
+        "must": ["No reply is best. If there is one, a single polite line saying this inbox handles candidate enquiries only."],
         "must_not": ["Engage with the offer or ask for details."],
         "forbidden_patterns": []
       },

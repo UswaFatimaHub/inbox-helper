@@ -135,6 +135,17 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             raise HTTPException(400, f"No valid messages to process. {details}")
         return loaded
 
+    def start_file_run(loaded: LoadResult, input_name: str) -> dict:
+        """Everything lands in one review queue, so messages already in it (same message_id) are skipped."""
+        with db.Session() as s:
+            ids = [m.message_id for m in loaded.messages]
+            queued = set(s.scalars(select(Item.message_id).where(Item.message_id.in_(ids))))
+        if queued and len(queued) == len(ids):
+            raise HTTPException(409, f"All {len(ids)} messages in {input_name} are already in the queue.")
+        fresh = LoadResult([m for m in loaded.messages if m.message_id not in queued], loaded.errors)
+        return {"id": start_run(fresh, input_name), "added": len(fresh.messages), "skipped": len(queued),
+                "errors": [asdict(e) for e in loaded.errors]}
+
     app.include_router(gmail_router(gmail, start_run))
 
     # ---- routes -----------------------------------------------------------------------------------------------
@@ -173,7 +184,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
 
     @app.post("/api/runs/sample", status_code=201)
     def run_sample():
-        return {"id": start_run(load_or_400(SAMPLE_INPUT), "Sample inbox (messages.csv)")}
+        return start_file_run(load_or_400(SAMPLE_INPUT), "Sample inbox (messages.csv)")
 
     @app.post("/api/runs", status_code=201)
     async def run_upload(file: UploadFile = File(...)):
@@ -185,7 +196,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             path = Path(tmp) / name
             path.write_bytes(data)
             loaded = load_or_400(path)
-        return {"id": start_run(loaded, name)}
+        return start_file_run(loaded, name)
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: int, s=Depends(session)):
@@ -215,6 +226,14 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
         items = s.scalars(select(Item).where(Item.run_id == run_id).order_by(Item.id)).all()
         imported = {g.gmail_id: g for g in s.scalars(select(GmailMessage).where(GmailMessage.run_id == run_id))}
         return [item_json(i, gm=imported.get(i.message_id)) for i in items]
+
+    @app.get("/api/items")
+    def list_all_items(s=Depends(session)):
+        """The review queue: every message from every fetch and upload."""
+        items = s.scalars(select(Item).order_by(Item.id)).all()
+        imported = {(g.gmail_id, g.run_id): g
+                    for g in s.scalars(select(GmailMessage).where(GmailMessage.run_id.is_not(None)))}
+        return [item_json(i, gm=imported.get((i.message_id, i.run_id))) for i in items]
 
     @app.get("/api/items/{item_id}")
     def item_detail(item_id: int, s=Depends(session)):
@@ -340,10 +359,18 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             s.commit()
         return {"unblocked": email}
 
+    @app.get("/api/export.csv")
+    def export_all_approved(s=Depends(session)):
+        items = s.scalars(select(Item).where(Item.review_status == "approved").order_by(Item.id)).all()
+        return approved_csv(items, "approved_replies.csv")
+
     @app.get("/api/runs/{run_id}/export.csv")
     def export_approved(run_id: int, s=Depends(session)):
         items = s.scalars(select(Item).where(Item.run_id == run_id, Item.review_status == "approved")
                           .order_by(Item.id)).all()
+        return approved_csv(items, f"approved_replies_run{run_id}.csv")
+
+    def approved_csv(items: list[Item], filename: str) -> Response:
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(["message_id", "candidate_name", "candidate_email", "subject", "intent", "final_reply",
@@ -352,7 +379,7 @@ def create_app(db: Database | None = None, lanes_factory: Callable[[], list[Lane
             w.writerow([i.message_id, i.candidate_name, i.candidate_email, i.subject, i.intent, i.final_reply,
                         i.reviewed_by, iso(i.reviewed_at)])
         return Response("﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8",
-                        headers={"Content-Disposition": f'attachment; filename="approved_replies_run{run_id}.csv"'})
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
     @app.get("/api/runs/{run_id}/audit.json")
     def export_audit(run_id: int, s=Depends(session)):

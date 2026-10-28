@@ -333,6 +333,11 @@ def test_html_body_becomes_text_without_the_quoted_part():
     assert parsed.body.startswith("Hello team,") and "earlier message" not in parsed.body
 
 
+def test_html_comments_in_the_text_part_are_removed():
+    text = "Keep track of your data\n\n<!--[if !mso]><!-->\nSee your settings\n<!--<![endif]-->\n<!-- tracking -->"
+    assert clean_body(text) == "Keep track of your data\n\nSee your settings"
+
+
 def test_reply_subject_is_not_prefixed_twice():
     gm = GmailMessage(gmail_id="x", thread_id="t", rfc_message_id="", references_header="", from_name="",
                       from_email="a@example.com", subject="RE: Offer")

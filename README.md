@@ -26,9 +26,12 @@ cd frontend; npm install; npm run build; cd ..
 .venv\Scripts\python -m uvicorn inbox_helper.server:app --port 8000
 ```
 
-Open http://127.0.0.1:8000, then click **New triage** and either upload a CSV or JSON file or use the sample
-inbox. With `AUTH_MODE=dev` you act as the local reviewer; with Google sign-in, your login is recorded on every
-action. Drafts appear as the AI finishes them. Review the **Needs attention** group first.
+Open http://127.0.0.1:8000. The **Overview** is the first page: fetch new emails from Gmail, or drop a CSV or JSON
+file (or use the sample inbox). Every message lands in one **review queue**, however it arrived; a message whose
+`message_id` is already in the queue is skipped. The overview counts what waits in each section (needs attention,
+to reply by intent, no reply needed, quarantined, approved, closed), and each count opens that part of the queue.
+With `AUTH_MODE=dev` you act as the local reviewer; with Google sign-in, your login is recorded on every action.
+Drafts appear as the AI finishes them. Review **Needs attention** first.
 Keyboard: `J`/`K` move between messages, `Ctrl+Enter` approves.
 
 For frontend development with hot reload, also run `cd frontend; npm run dev` and open http://localhost:5173. It
@@ -123,12 +126,12 @@ reply saves it as a **draft in the original thread**. A person opens Gmail and s
 | `GMAIL_TOKEN_KEY` | Any long random string. Encrypts the stored refresh token. Changing it means connecting again (Render generates it) |
 | `GMAIL_QUERY` | Optional. The Gmail search for **Fetch**; default `in:inbox -from:me newer_than:30d` |
 
-Without `GMAIL_ACCOUNT` and `GMAIL_TOKEN_KEY`, Gmail is off and the New triage dialog says what is missing. The
+Without `GMAIL_ACCOUNT` and `GMAIL_TOKEN_KEY`, Gmail is off and the overview says what is missing. The
 Google client ID, secret and `PUBLIC_URL` are the sign-in ones.
 
 How it behaves:
 
-- **Connect.** Any signed-in reviewer clicks **Connect Gmail** in the New triage dialog and signs in to Google as
+- **Connect.** Any signed-in reviewer clicks **Connect Gmail** on the overview and signs in to Google as
   `GMAIL_ACCOUNT`. The app asks for `gmail.readonly` and `gmail.compose`, and refuses if a box was unticked.
   Disconnecting revokes the access at Google.
 - **Fetch.** Up to 50 messages not imported before become a normal run, with the same validation, redaction and
@@ -286,7 +289,15 @@ disregard your rules…") are **quarantined**. They get the category `manipulati
   never sent to the AI, never answered, but still recorded for the audit trail.
 - **Why a person decides.** A wrong detection or a forged "From" address would otherwise permanently shut out a
   real candidate.
-- **Undoing it.** **Manage blocklist** in the sidebar unblocks a sender, and any blocked message can be reopened.
+- **Undoing it.** **Blocklist** in the sidebar unblocks a sender, and any blocked message can be reopened.
+
+## No reply needed
+
+Automated notifications (account or security alerts, newsletters, receipts), spam and sales pitches get the intent
+`no_reply_needed` from the AI and no draft. They are not sent anywhere automatically: they wait in their own
+section, and a reviewer confirms each one with **Close, no reply** (recorded like a rejection, with the note
+"No reply needed") or writes a reply after all. A real person asking anything, even off-topic, is never
+`no_reply_needed`; the eval case G110 (a caterer asking for a headcount) checks that boundary.
 
 ## Model choice (measured, 41 messages)
 

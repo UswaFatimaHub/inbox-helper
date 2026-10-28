@@ -1,8 +1,11 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --color-canvas: #f6f7fb;
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", monospace;
+  --color-canvas: #f2f4f9;
+  --shadow-card: 0 1px 2px rgba(20, 35, 80, 0.05), 0 10px 28px -14px rgba(20, 35, 80, 0.16);
+  --shadow-pop: 0 4px 14px rgba(20, 35, 80, 0.1), 0 20px 48px -16px rgba(20, 35, 80, 0.24);
 }
 
 html,
@@ -11,15 +14,99 @@ body,
   height: 100%;
 }
 
+/* A faint drafting-paper grid under everything, with a soft accent glow top left */
 body {
   @apply bg-canvas text-slate-900 antialiased;
-  font-feature-settings: "cv11", "ss01";
+  background-image:
+    radial-gradient(ellipse 1100px 650px at 15% -10%, rgb(79 70 229 / 0.06), transparent 60%),
+    linear-gradient(rgb(51 65 120 / 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(51 65 120 / 0.045) 1px, transparent 1px);
+  background-size: 100% 100%, 28px 28px, 28px 28px;
+  background-attachment: fixed;
+}
+
+::selection {
+  background: rgb(79 70 229 / 0.2);
 }
 
 /* Thin, quiet scrollbars for the independently scrolling panes */
 .pane {
   scrollbar-width: thin;
   scrollbar-color: #d5d9e2 transparent;
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-slate-200/90 bg-white/90 shadow-card;
+  }
+
+  /* Small mono capitals: section labels, table heads, card titles */
+  .microlabel {
+    @apply font-mono text-[11px] font-medium tracking-[0.14em] text-slate-400 uppercase;
+  }
+}
+
+/* Finer accent grid for the hero card */
+.hero-grid {
+  background-image:
+    linear-gradient(rgb(79 70 229 / 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(79 70 229 / 0.07) 1px, transparent 1px),
+    linear-gradient(rgb(79 70 229 / 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(79 70 229 / 0.035) 1px, transparent 1px);
+  background-size: 96px 96px, 96px 96px, 24px 24px, 24px 24px;
+}
+
+/* Corner marks, top left and bottom right */
+.corners {
+  position: relative;
+}
+
+.corners::before,
+.corners::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 0 solid rgb(79 70 229 / 0.4);
+  pointer-events: none;
+  transition: border-color 0.2s ease;
+}
+
+.corners::before {
+  top: 10px;
+  left: 10px;
+  border-width: 1.5px 0 0 1.5px;
+}
+
+.corners::after {
+  right: 10px;
+  bottom: 10px;
+  border-width: 0 1.5px 1.5px 0;
+}
+
+.corners-active::before,
+.corners-active::after {
+  border-color: rgb(79 70 229 / 0.85);
+}
+
+/* Status light with a soft halo */
+.led {
+  position: relative;
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+}
+
+.led::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 9999px;
+  background: inherit;
+  opacity: 0.25;
+  filter: blur(2px);
 }
 
 @keyframes toast-in {
@@ -83,10 +170,21 @@ body {
   animation: indeterminate 1.2s ease-in-out infinite;
 }
 
+@keyframes blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.animate-blink {
+  animation: blink 1.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-row,
   .shimmer,
-  .animate-indeterminate {
+  .animate-indeterminate,
+  .animate-blink {
     animation: none;
   }
 }

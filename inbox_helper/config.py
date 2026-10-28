@@ -11,7 +11,8 @@ CACHE_PATH = ROOT / ".cache" / "triage_cache.json"
 
 # A label recorded on every draft and eval run; bump it when the prompt changes so results can be compared.
 # The cache does not depend on it: cache keys hash the prompt text itself (pipeline.TriageRun._cache_key).
-PROMPT_VERSION = "v3"  # v2: no claimed actions, team voice, acknowledge frustration, spam flag; v3: injection != spam
+PROMPT_VERSION = "v4"  # v2: no claimed actions, team voice, acknowledge frustration, spam flag; v3: injection != spam
+#                        v4: no_reply_needed for automated mail and spam (no draft)
 
 INTENTS = {
     "application_status": "Asks where their application stands, whether it was received, or whether a decision was made.",
@@ -22,8 +23,13 @@ INTENTS = {
     "accommodation_request": "Asks for an interview adjustment for disability, health, or similar needs.",
     "complaint": "Raises a concern about how they were treated or about the process conduct.",
     "general_question": "Questions about the company, roles, process, benefits, location, or visas.",
-    "other": "Unclear, not from a candidate, spam, or does not fit any intent above.",
+    "other": "Unclear, or a person asking something that does not fit any intent above.",
+    "no_reply_needed": "Nobody is waiting for an answer: automated notifications (account, security, delivery), "
+                       "newsletters, receipts, spam and sales pitches. No reply is drafted; a reviewer confirms.",
 }
+
+# The AI's suggestion that a message needs no answer. It gets no draft and no queue priority; a reviewer closes it.
+NO_REPLY_INTENT = "no_reply_needed"
 
 # Categories assigned by code, never offered to the model. These messages get no AI-drafted reply.
 SYSTEM_INTENTS = {

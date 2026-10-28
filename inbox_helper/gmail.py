@@ -301,9 +301,14 @@ QUOTE_START = re.compile(r"^(On\b[^\n]{0,200}(\n[^\n]{0,200})?\bwrote:|-{2,} ?Or
                          re.M | re.I)
 
 
+# HTML comments left in plain-text parts, e.g. Outlook conditionals "<!--[if !mso]><!-->" and "<![endif]-->"
+HTML_COMMENT = re.compile(r"<!--.*?-->|<!\[(?:if|endif)[^>]*>|<!--\[if[^>]*>", re.S | re.I)
+
+
 def clean_body(text: str) -> str:
     """Only what the sender wrote this time: quoted replies and the signature are cut."""
     text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\xa0", " ")
+    text = HTML_COMMENT.sub("", text)
     if m := QUOTE_START.search(text):
         text = text[:m.start()]
     lines = []

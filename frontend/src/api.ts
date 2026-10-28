@@ -1,4 +1,7 @@
-import type { BlockedSender, GmailFetch, GmailStatus, Item, Me, Meta, Run } from "./types";
+import type { BlockedSender, GmailFetch, GmailStatus, InputError, Item, Me, Meta, Run } from "./types";
+
+/** A file or the sample was added to the queue: messages already in it are skipped. */
+export type Started = { id: number; added: number; skipped: number; errors: InputError[] };
 
 /** Thrown (and announced with a "signed-out" window event) when the session is missing or has expired. */
 export class SignedOutError extends Error {}
@@ -37,12 +40,13 @@ export const api = {
   runs: () => request<Run[]>("/api/runs"),
   run: (id: number) => request<Run>(`/api/runs/${id}`),
   items: (runId: number) => request<Item[]>(`/api/runs/${runId}/items`),
+  queue: () => request<Item[]>("/api/items"),
   item: (id: number) => request<Item>(`/api/items/${id}`),
-  startSample: () => request<{ id: number }>("/api/runs/sample", { method: "POST" }),
+  startSample: () => request<Started>("/api/runs/sample", { method: "POST" }),
   upload: (file: File) => {
     const form = new FormData();
     form.append("file", file);
-    return request<{ id: number }>("/api/runs", { method: "POST", body: form });
+    return request<Started>("/api/runs", { method: "POST", body: form });
   },
   // the reviewer is the signed-in user; the server records it
   review: (id: number, body: { action: "save" | "approve" | "reject" | "reopen"; text?: string; note?: string }) =>
@@ -57,6 +61,6 @@ export const api = {
   gmailFetch: () => request<GmailFetch>("/api/gmail/fetch", { method: "POST" }),
   gmailDisconnect: () => fetch("/api/gmail/disconnect", { method: "POST" }),
   gmailDraft: (id: number) => request<Item>(`/api/items/${id}/gmail-draft`, { method: "POST" }),
-  exportUrl: (runId: number) => `/api/runs/${runId}/export.csv`,
+  exportUrl: "/api/export.csv",
   auditUrl: (runId: number) => `/api/runs/${runId}/audit.json`,
 };

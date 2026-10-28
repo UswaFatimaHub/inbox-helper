@@ -8,6 +8,7 @@ export const INTENT_LABELS: Record<string, string> = {
   complaint: "Complaint",
   general_question: "General question",
   other: "Other / unclear",
+  no_reply_needed: "No reply needed",
   manipulation_attempt: "Manipulation",
   blocked_sender: "Blocked sender",
 };
@@ -23,6 +24,7 @@ export const INTENT_STYLES: Record<string, { dot: string; chip: string }> = {
   complaint: { dot: "bg-rose-500", chip: "bg-rose-50 text-rose-700 ring-rose-200" },
   general_question: { dot: "bg-indigo-500", chip: "bg-indigo-50 text-indigo-700 ring-indigo-200" },
   other: { dot: "bg-zinc-400", chip: "bg-zinc-100 text-zinc-700 ring-zinc-200" },
+  no_reply_needed: { dot: "bg-slate-300", chip: "bg-slate-50 text-slate-500 ring-slate-200" },
   manipulation_attempt: { dot: "bg-red-600", chip: "bg-red-50 text-red-700 ring-red-300" },
   blocked_sender: { dot: "bg-zinc-700", chip: "bg-zinc-800 text-zinc-50 ring-zinc-800" },
 };
