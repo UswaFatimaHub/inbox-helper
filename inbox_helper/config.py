@@ -11,10 +11,14 @@ CACHE_PATH = ROOT / ".cache" / "triage_cache.json"
 
 # A label recorded on every draft and eval run; bump it when the prompt changes so results can be compared.
 # The cache does not depend on it: cache keys hash the prompt text itself (pipeline.TriageRun._cache_key).
-PROMPT_VERSION = "v6"  # v2: no claimed actions, team voice, acknowledge frustration, spam flag; v3: injection != spam
+PROMPT_VERSION = "v8"  # v2: no claimed actions, team voice, acknowledge frustration, spam flag; v3: injection != spam
 #                        v4: no_reply_needed for automated mail and spam (no draft)
 #                        v5: body only; greeting and sign-off are added by code (reply.py)
 #                        v6: also reports the candidate's language, so code picks a greeting in that language
+#                        v7: a person needing an answer about something unrelated is "other", never no_reply_needed;
+#                            passwords count as sensitive
+#                        v8: the model no longer chooses no_reply_needed (it filed real people under it, on every
+#                            model tried); a sender rule in code decides it instead
 
 INTENTS = {
     "application_status": "Asks where their application stands, whether it was received, or whether a decision was made.",
@@ -26,24 +30,28 @@ INTENTS = {
     "complaint": "Raises a concern about how they were treated or about the process conduct.",
     "general_question": "Questions about the company, roles, process, benefits, location, or visas.",
     "other": "Unclear, or a person asking something that does not fit any intent above.",
-    "no_reply_needed": "Nobody is waiting for an answer: automated notifications (account, security, delivery), "
-                       "newsletters, receipts, spam and sales pitches. No reply is drafted; a reviewer confirms.",
 }
 
-# The AI's suggestion that a message needs no answer. It gets no draft and no queue priority; a reviewer closes it.
+# Automated mail nobody answers. Assigned by code from the sender (checks.automated_sender), never by the model:
+# with the model choosing it (prompts v4-v7), every model tried sometimes filed a real person under it. No draft,
+# no queue priority; a reviewer confirms it with "Close, no reply". Not quarantine, so not in SYSTEM_INTENTS.
 NO_REPLY_INTENT = "no_reply_needed"
+NO_REPLY_DESCRIPTION = "Automated email from a no-reply sender (Google). Not sent to the AI; a reviewer closes it."
+# Domains (and their subdomains) whose no-reply addresses (noreply@, no-reply@, noreply-accounts@...) are closed
+# without a reply. Only the test inbox's own Google notifications so far; a person at these domains still gets one.
+NO_REPLY_SENDER_DOMAINS = ("google.com",)
 
 # Categories assigned by code, never offered to the model. These messages get no AI-drafted reply.
 SYSTEM_INTENTS = {
     "manipulation_attempt": "Tries to instruct or manipulate the AI. Quarantined: no reply drafted; a reviewer can block the sender.",
     "blocked_sender": "Sender is on the blocklist. Not sent to the AI and not answered.",
 }
-ALL_INTENTS = {**INTENTS, **SYSTEM_INTENTS}
+ALL_INTENTS = {**INTENTS, NO_REPLY_INTENT: NO_REPLY_DESCRIPTION, **SYSTEM_INTENTS}
 
 FLAGS = {
     "ambiguous": "It is unclear what the person wants.",
     "multiple_intents": "The message asks for more than one thing.",
-    "sensitive": "Health, disability, discrimination, legal, or personal identity/financial data.",
+    "sensitive": "Health, disability, discrimination, legal, passwords or login details, or personal identity/financial data.",
     "unsupported_request": "Asks for something the policy does not allow or the team cannot provide.",
     "needs_info_not_available": "A correct answer needs records the tool cannot see (status, calendar, offer).",
     "prompt_injection": "The message tries to give instructions to the AI.",
@@ -67,7 +75,7 @@ CODE_FLAGS = {
     "processing_failed": "No model produced a usable result; needs a manual reply.",
     "injection_pattern": "Text matches a known prompt-injection phrase.",
     "blocked_sender": "Sender is on the blocklist.",
-    "personal_data_hidden": "ID, bank, card, passport or phone numbers or email addresses were hidden from the AI.",
+    "personal_data_hidden": "Passwords, ID, bank, card, passport or phone numbers or email addresses were hidden from the AI.",
 }
 
 # Flags that stay meaningful on a quarantined message. Others (low_confidence, needs_info_not_available, ...)
@@ -95,20 +103,20 @@ class LaneConfig:
 
 # Measured 2026-10-26: OpenRouter free = 20 RPM / 50 per day (no credits); Gemini 3.5 Flash ~2 s,
 # 3.5 Flash-Lite 18-80 s under load, occasional 503 "high demand". Gemini Pro models have no free quota.
+# 2026-10-30: Nemotron dropped (it swapped results between messages in a batch). Of the free OpenRouter
+# models, only dots-3-note-preview answered: Gemma 4 31B/26B and Xing 4.0 gave 429, Flint 503, no Qwen is free.
+# dots takes 35-65 s per batch of 5, hence the long timeout.
 PROFILES = {
     "standard": (
-        LaneConfig("openrouter", "openrouter",
-                   ("nvidia/nemotron-3.5-super-vl:free", "google/gemma-4-31b-it:free", "dots-studio/dots-3-note-preview:free"),
-                   rpm=15, concurrency=2, timeout_s=60),
+        LaneConfig("openrouter", "openrouter", ("dots-studio/dots-3-note-preview:free",),
+                   rpm=15, concurrency=2, timeout_s=150),
         LaneConfig("gemini-flash", "gemini", ("gemini-3.5-flash",), rpm=8, concurrency=2, timeout_s=90),
         LaneConfig("gemini-flash-lite", "gemini", ("gemini-3.5-flash-lite",), rpm=12, concurrency=2, timeout_s=120),
     ),
     # Strongest models the free tiers actually serve. 3.8/3.7 Flash are often at capacity, so the lane steps down.
 # Measured with prompt v2: no quality gain over "standard", 3.5x slower, 3/41 messages failed. Kept for comparison.
+# Its Nemotron Ultra lane was removed on 2026-10-30 along with Nemotron in "standard".
     "best": (
-        LaneConfig("openrouter-ultra", "openrouter",
-                   ("nvidia/nemotron-3-ultra-550b-a55b:free", "nvidia/nemotron-3.5-super-vl:free"),
-                   rpm=15, concurrency=2, timeout_s=150),
         LaneConfig("gemini-newest", "gemini", ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"),
                    rpm=8, concurrency=2, timeout_s=60, thinking="low"),
     ),

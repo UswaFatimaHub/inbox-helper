@@ -22,6 +22,10 @@ from inbox_helper.redact import find_identifiers, redact
     ("Passport No. AB1234567 attached", "Passport No. [PASSPORT] attached", ["PASSPORT"]),
     ("reach me at amna.r+jobs@mail.example.org instead", "reach me at [EMAIL] instead", ["EMAIL"]),
     ("account 1234-5678-9012", "account [NUMBER]", ["NUMBER"]),
+    ("My password is Brightpath123! - could you log in?", "My password is [PASSWORD] - could you log in?",
+     ["PASSWORD"]),
+    ("Password: hunter2", "Password: [PASSWORD]", ["PASSWORD"]),
+    ('the portal password was "Qx7!pw9z" yesterday', 'the portal password was "[PASSWORD]" yesterday', ["PASSWORD"]),
 ])
 def test_identifiers_are_hidden(text, expected, kinds):
     r = redact(text)
@@ -37,18 +41,22 @@ def test_identifiers_are_hidden(text, expected, kinds):
     "I scored 1450 on the test and 98.5% in maths.",
     "Order AB1234567 is not a passport.",
     "Thanks, ACME CORP TEAM SALES DEPT",
+    "My password is not working and the reset link expired.",
+    "I forgot my password: can you send a reset link?",
+    "Password reset on 12/10 did not arrive.",
 ])
 def test_ordinary_numbers_and_text_are_kept(text):
     assert redact(text).text == text
 
 
-def test_only_m039_changes_in_the_sample_and_golden_messages():
-    """Guards against over-redaction: in the synthetic data only M039 carries identifiers."""
+def test_only_m039_and_g111_change_in_the_sample_and_golden_messages():
+    """Guards against over-redaction: in the synthetic data only M039 (ID and bank numbers) and G111 (a password)
+    carry identifiers."""
     texts = {m.message_id: f"{m.subject}\n{m.body}" for m in load_messages(ROOT / "data" / "messages.csv").messages}
     goldens = json.loads((ROOT / "evals" / "goldens.json").read_text(encoding="utf-8"))["goldens"]
     texts |= {g["id"]: f"{g['message'].get('subject', '')}\n{g['message']['body']}" for g in goldens}
     changed = {mid for mid, t in texts.items() if redact(t).text != t}
-    assert changed == {"M039"}
+    assert changed == {"M039", "G111"}
 
 
 def _replace_spans(text: str) -> str:
@@ -61,6 +69,7 @@ def _replace_spans(text: str) -> str:
     "Here is my CNIC number 35202-1234567-1 and my bank account number 0123456789012 for the joining bonus.",
     "IBAN: PK36 SCBL 0000 0011 2345 6702.", "Card 4111 1111 1111 1111 exp soon", "Passport No. AB1234567 attached",
     "Call me on +92 300 1234567 or 0300-1234567", "My interview is on 2026-10-27 at 14:30, ref 4521.",
+    "My password is Brightpath123! - could you log in?",
 ])
 def test_highlight_spans_mark_exactly_what_redact_hides(text):
     assert _replace_spans(text) == redact(text).text

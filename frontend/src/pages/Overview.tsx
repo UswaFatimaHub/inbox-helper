@@ -356,7 +356,7 @@ function Sections({ items, intents, onOpen }: { items: Item[]; intents: string[]
           <Tile icon={<Reply className="size-4 text-indigo-500" />} label="To reply" value={toReply}
             onClick={() => onOpen({ group: "all", status: "pending" })} />
           <Tile icon={<MailX className="size-4 text-slate-400" />} label="No reply needed" value={c.noReply}
-            hint="AI suggests closing" onClick={() => onOpen({ group: NO_REPLY, status: "pending" })} />
+            hint="Automated emails" onClick={() => onOpen({ group: NO_REPLY, status: "pending" })} />
           <Tile icon={<ShieldAlert className="size-4 text-red-600" />} label="Quarantined" value={c.quarantined}
             onClick={() => onOpen({ group: "manipulation_attempt", status: "pending" })} />
           <Tile icon={<CheckCircle2 className="size-4 text-emerald-500" />} label="Approved" value={c.approved}

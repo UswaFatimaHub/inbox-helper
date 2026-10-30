@@ -30,7 +30,7 @@
     "people_team": "Requests are passed confidentially to the People team, who will contact the candidate. Do not ask for medical details.",
     "complaint_escalation": "Concerns about interview conduct are taken seriously and escalated to the Head of Talent, who will contact the candidate within 5 business days.",
     "complaint_tone": "Acknowledge and thank the candidate. Do not argue, speculate, or admit fault on behalf of individuals.",
-    "not_candidates": "Sales pitches and unrelated messages: draft a one-line polite note that this inbox handles candidate enquiries only."
+    "not_candidates": "Sales pitches, spam and other messages that are not about hiring (another business, a misdirected email): draft a one-line polite note that this inbox handles candidate enquiries only, and flag it for a reviewer to pass on."
   },
   "goldens": [
     {
@@ -436,8 +436,8 @@
       "id": "M034", "split": "sample", "category": "not_a_candidate", "difficulty": "easy",
       "message": {"candidate_name": "Growth Team", "candidate_email": "offers@seo-growth.example", "role": "", "subject": "Partnership opportunity", "body": "Congratulations! Your company has been selected for our premium SEO package. Reply today to claim 50% off your first three months."},
       "expected": {
-        "acceptable_intents": ["no_reply_needed", "other"], "required_flags": [], "must_prioritise": false, "reply_style": "optional",
-        "must": ["No reply is best. If there is one, a single polite line saying this inbox handles candidate enquiries only."],
+        "acceptable_intents": ["other"], "required_flags": ["unsupported_request"], "must_prioritise": true, "reply_style": "one_line",
+        "must": ["One polite line saying this inbox handles candidate enquiries only."],
         "must_not": ["Engage with the offer or ask for details."],
         "forbidden_patterns": []
       },
@@ -604,6 +604,19 @@
       "policy_refs": ["follow_up", "no_decisions"],
       "reference_reply": "Hi Amna,\n\nThank you for following up on your Backend Engineer application. The recruiter will check where your application stands and follow up with you within 2 business days.\n\nBest regards,\nBrightpath Recruiting Team",
       "notes": "Same sender as M027. Becomes blocked_sender (no draft) once a reviewer blocks the sender; otherwise a normal status reply."
+    },
+    {
+      "id": "M049", "split": "sample", "category": "not_a_candidate", "difficulty": "hard",
+      "message": {"candidate_name": "Saad Malik", "candidate_email": "saad@printhub.example", "role": "", "subject": "Your business card order", "body": "Hi, this is Saad from PrintHub. Your order of 500 business cards is ready, but the delivery address on the form is incomplete. Could you reply with the full address so we can dispatch it today? Thanks, Saad"},
+      "expected": {
+        "acceptable_intents": ["other"], "required_flags": ["unsupported_request"], "must_prioritise": true, "reply_style": "one_line",
+        "must": ["One polite line saying this inbox handles candidate enquiries only."],
+        "must_not": ["Give or guess a delivery address, or confirm the order."],
+        "forbidden_patterns": []
+      },
+      "policy_refs": ["not_candidates"],
+      "reference_reply": "Thank you for your message; this inbox handles candidate enquiries only.\n\nBrightpath Recruiting Team",
+      "notes": "Sample twin of G110: a person from another business waiting for an answer. Added on day 5, when prompts v4-v7 let the model file such people under no_reply_needed; G110 stays an unseen holdout."
     },
     {
       "id": "G101", "split": "holdout", "category": "interview_scheduling", "difficulty": "easy",

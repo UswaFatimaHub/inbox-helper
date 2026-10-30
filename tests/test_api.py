@@ -49,7 +49,7 @@ def wait_done(client, run_id, timeout=10):
 def test_one_queue_holds_every_run_and_skips_messages_already_in_it(client):
     first = client.post("/api/runs/sample").json()
     wait_done(client, first["id"])
-    assert first["added"] == 47 and first["skipped"] == 0
+    assert first["added"] == 48 and first["skipped"] == 0
     again = client.post("/api/runs/sample")
     assert again.status_code == 409 and "already in the queue" in again.json()["detail"]
 
@@ -58,7 +58,7 @@ def test_one_queue_holds_every_run_and_skips_messages_already_in_it(client):
     assert r["added"] == 1 and r["skipped"] == 1
     wait_done(client, r["id"])
     queue = client.get("/api/items").json()
-    assert len(queue) == 48 and {i["run_id"] for i in queue} == {first["id"], r["id"]}
+    assert len(queue) == 49 and {i["run_id"] for i in queue} == {first["id"], r["id"]}
 
 
 def test_each_reviewer_can_set_the_greeting_and_sign_off(client):
@@ -97,10 +97,10 @@ def test_export_of_the_whole_queue_has_only_approved_replies(client):
 def test_sample_run_creates_one_item_per_valid_message(client):
     run_id = client.post("/api/runs/sample").json()["id"]
     run = wait_done(client, run_id)
-    assert run["status"] == "done" and run["processed"] == run["total"] == 47
+    assert run["status"] == "done" and run["processed"] == run["total"] == 48
     assert [e["message_id"] for e in run["input_errors"]] == ["M041"]
     items = client.get(f"/api/runs/{run_id}/items").json()
-    assert len({i["message_id"] for i in items}) == 47
+    assert len({i["message_id"] for i in items}) == 48
     assert all(i["review_status"] == "pending" for i in items)
 
 
@@ -179,7 +179,7 @@ def test_run_waits_in_the_queue_until_a_worker_takes_it(db):
         assert c.get("/api/health").json()["jobs_queued"] == 1
         assert Worker(db, fake_lanes, cache_path=None, log=lambda _: None).run_once()
         run = c.get(f"/api/runs/{run_id}").json()
-        assert run["status"] == "done" and run["processed"] == 47
+        assert run["status"] == "done" and run["processed"] == 48
         health = c.get("/api/health").json()
         assert health["ok"] and health["jobs_queued"] == 0 and health["oldest_queued_s"] is None
 

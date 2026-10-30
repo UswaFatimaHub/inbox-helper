@@ -85,5 +85,5 @@ def test_warnings_for_bad_email_and_duplicate_text(tmp_path):
 def test_sample_dataset_loads():
     from inbox_helper.config import ROOT
     res = load_messages(ROOT / "data" / "messages.csv")
-    assert len(res.messages) == 47
+    assert len(res.messages) == 48
     assert [e.message_id for e in res.errors] == ["M041"]  # the deliberately empty message

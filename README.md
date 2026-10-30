@@ -157,7 +157,7 @@ Google Cloud setup, on top of the sign-in setup:
    - `http://127.0.0.1:8000/api/gmail/callback` and `https://<your-service>.onrender.com/api/gmail/callback`
    - `http://127.0.0.1:8765/` (used only by the seeding script)
 
-Fill the test inbox with the synthetic messages (47 valid ones from `data/messages.csv`), then use **Fetch new
+Fill the test inbox with the synthetic messages (48 valid ones from `data/messages.csv`), then use **Fetch new
 emails**:
 
 ```powershell
@@ -259,6 +259,7 @@ Before a message goes to any model, `inbox_helper/redact.py` swaps identifiers f
 | Card numbers (Luhn-checked) | `[CARD_NUMBER]` |
 | Phone numbers | `[PHONE]` |
 | Passport numbers (next to the word "passport") | `[PASSPORT]` |
+| Passwords (after "password is" / "password:", if the value has a digit) | `[PASSWORD]` |
 | Email addresses in the text | `[EMAIL]` |
 | Any other number with 9+ digits | `[NUMBER]` |
 
@@ -309,11 +310,22 @@ own lines or run into the text ("Dear Rabia, thank you ... follow up. Brightpath
 
 ## No reply needed
 
-Automated notifications (account or security alerts, newsletters, receipts), spam and sales pitches get the intent
-`no_reply_needed` from the AI and no draft. They are not sent anywhere automatically: they wait in their own
-section, and a reviewer confirms each one with **Close, no reply** (recorded like a rejection, with the note
-"No reply needed") or writes a reply after all. A real person asking anything, even off-topic, is never
-`no_reply_needed`; the eval case G110 (a caterer asking for a headcount) checks that boundary.
+Automated email from a no-reply address at Google (`noreply-accounts@google.com`, `no-reply@google.com`, any
+`google.com` subdomain) gets the intent `no_reply_needed` **from code, before any AI call** (`checks.automated_sender`,
+domains in `config.NO_REPLY_SENDER_DOMAINS`). It has no draft and is not sent to the AI. It waits in its own section,
+and a reviewer confirms each one with **Close, no reply** (recorded like a rejection, with the note "No reply
+needed") or writes a reply after all. Both parts are required: a person writing from a `google.com` address still
+gets a reply. The address is trusted as written, as for the blocklist.
+
+Everything else gets a draft, including spam and messages from other businesses (a one-line "this inbox handles
+candidate enquiries only", flagged for a reviewer). Manipulation attempts are still quarantined with no draft.
+
+**Why code and not the AI.** From prompt v4 to v7 the AI chose `no_reply_needed`. On 2026-10-30 every model tried
+sometimes filed a person waiting for an answer under it: G110 (a caterer asking for a headcount) failed in every CI
+run from v4 on, and M049 (a printer asking for a delivery address) failed in 5 of 8 uncached runs across Gemini
+Flash-Lite, dots and Nemotron. A real candidate (Komal, M033) was also filed under it in the Gmail inbox, because
+Nemotron swapped her result with the SEO spam's in the same batch. With prompt v8, G110, M049 and M034 were labelled
+`other` in all 3 runs.
 
 ## Model choice (measured, 41 messages)
 
@@ -326,6 +338,13 @@ section, and a reviewer confirms each one with **Close, no reply** (recorded lik
 \*Drafts that claimed an action was done or spoke as the AI.
 
 The prompt fixed the drafts; the bigger models didn't help. Gemini Pro models have no free quota on this key.
+
+**2026-10-30: Nemotron removed.** In a Gmail run it swapped results between messages in one batch (the SEO spam got
+a candidate's label and the candidate got the spam's), and it filed people waiting for an answer as "no reply
+needed". Of the 16 free OpenRouter models listed that day, only `dots-studio/dots-3-note-preview` answered: Gemma 4
+31B and 26B and Xing 4.0 returned 429, Flint returned 503, and no Qwen model was free. dots now runs the OpenRouter
+lane. It takes 35–65 s per batch of 5 and sometimes returns invalid JSON, which the pipeline recovers from by
+splitting the batch.
 
 ## Layout
 
@@ -359,9 +378,9 @@ The prompt fixed the drafts; the bigger models didn't help. Gemini Pro models ha
 2. Frontend type check and build.
 3. Dependency scan: `pip-audit` and `npm audit`.
 4. Docker: builds the image, starts Postgres + web + worker, and checks health, the UI and the migration version.
-5. **Eval gate.** Runs the real pipeline on all 63 goldens and fails if a metric scores below
-   `evals/baseline.json` (see `evals/README.md`). Needs a `GEMINI_API_KEY` repository secret
-   (`OPENROUTER_API_KEY` is optional and uses its 50/day quota). An unchanged prompt is served from the cache,
+5. **Eval gate.** Runs the real pipeline on all 64 goldens and fails if a metric scores below
+   `evals/baseline.json` or any must-pass case fails (see `evals/README.md`). Needs a `GEMINI_API_KEY` repository
+   secret (`OPENROUTER_API_KEY` is optional and uses its 50/day quota). An unchanged prompt is served from the cache,
    so it costs no API calls.
 
 **Status (2026-10-27).** All five jobs pass on GitHub
@@ -392,5 +411,8 @@ On that run:
   notifications). A draft edited or deleted in Gmail is not noticed by the app.
 - The expected labels were written with AI help, so accuracy against them is a sanity check, not an independent
   benchmark.
+- A model can attach one message's result to another message in the same batch (Nemotron did, 2026-10-30). The
+  code checks only that every requested id has a result, not that the result belongs to it. A wrong-looking reason
+  ("Sales pitch…" on a status question) is the reviewer's clue.
 - Free-tier Gemini may use inputs to improve Google's products. That's fine for synthetic data, but not for real
   candidate data, even with identifiers hidden.

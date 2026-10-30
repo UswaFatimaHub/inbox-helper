@@ -7,7 +7,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from .config import FLAGS, INTENTS, LOW_CONFIDENCE, MAX_DRAFT_WORDS, NO_REPLY_INTENT
+from .config import FLAGS, INTENTS, LOW_CONFIDENCE, MAX_DRAFT_WORDS, NO_REPLY_SENDER_DOMAINS
 
 
 class ParseError(Exception):
@@ -46,9 +46,7 @@ def parse_batch_response(text: str, expected_ids: list[str]) -> dict[str, dict]:
     for item in items:
         if isinstance(item, dict):
             mid = str(item.get("message_id", "")).strip()
-            # a result needs a draft, unless the model says no reply is needed
-            has_draft = str(item.get("draft_reply") or "").strip() or str(item.get("intent") or "").strip().lower() == NO_REPLY_INTENT
-            if mid in wanted and mid not in found and has_draft:
+            if mid in wanted and mid not in found and str(item.get("draft_reply") or "").strip():  # needs a draft
                 found[mid] = item
     if not found:
         raise ParseError("model JSON contained no usable result for any requested message")
@@ -130,6 +128,16 @@ INJECTION_PATTERNS = [
 
 def detect_injection(text: str) -> bool:
     return any(p.search(text) for p in INJECTION_PATTERNS)
+
+
+def automated_sender(email: str) -> bool:
+    """A no-reply address (noreply@, no-reply@, noreply-accounts@...) at a NO_REPLY_SENDER_DOMAINS domain or a
+    subdomain of it. Both are required, so a person writing from such a domain still gets a reply. The address is
+    trusted as written (no SPF/DKIM check), like the blocklist."""
+    local, _, domain = email.strip().lower().rpartition("@")
+    if not re.search(r"no-?reply", local):
+        return False
+    return any(domain == d or domain.endswith("." + d) for d in NO_REPLY_SENDER_DOMAINS)
 
 
 def injection_spans(text: str) -> list[tuple[int, int]]:

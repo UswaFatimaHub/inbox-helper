@@ -65,4 +65,5 @@ drafting tool may use.
 - Acknowledge and thank the candidate. Do not argue, speculate, or admit fault on behalf of individuals.
 
 ## Messages that are not from candidates
-- Sales pitches and unrelated messages: draft a one-line polite note that this inbox handles candidate enquiries only.
+- Sales pitches, spam and other messages that are not about hiring (another business, a misdirected email): draft a
+  one-line polite note that this inbox handles candidate enquiries only, and flag it for a reviewer to pass on.

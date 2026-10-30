@@ -30,7 +30,7 @@ evals\.venv\Scripts\python -m evals.run_eval --results out\results.json
 evals\.venv\Scripts\python -m evals.run_eval --live
 ```
 
-Useful flags: `--split sample|holdout`, `--ids M001,M027`, `--judge gemini|gemini-newest|openrouter|none`,
+Useful flags: `--split sample|holdout`, `--ids M001,M027`, `--judge gemini|gemini-newest|none`,
 `--metrics faithfulness,policy,quality`, `--profile standard|best` (for `--live`), `--fresh` (no cache).
 
 ## Eval gate (CI)
@@ -39,7 +39,7 @@ Useful flags: `--split sample|holdout`, `--ids M001,M027`, `--judge gemini|gemin
 comparison with the committed baseline, not on that exit code:
 
 ```powershell
-evals\.venv\Scripts\python -m evals.run_eval --live --judge none   # rule metrics on all 63 goldens
+evals\.venv\Scripts\python -m evals.run_eval --live --judge none   # rule metrics on all 64 goldens
 evals\.venv\Scripts\python -m evals.gate                           # compare the newest run with evals/baseline.json
 evals\.venv\Scripts\python -m evals.gate --update                  # accept it as the new baseline, then commit
 ```
@@ -60,11 +60,24 @@ evals\.venv\Scripts\python -m evals.gate --update                  # accept it a
 
   A tolerance of 1 would have failed a change that made no difference, so it stays at 2. Revisit it after more
   runs. The `sensitive` flag and the sign-off are the least stable rules.
+
+  **Correction (2026-10-30).** G111 was not noise. It missed `sensitive` in every later CI run (4 of 4). The flag's
+  definition did not mention passwords, and the password itself reached the AI. Passwords are now hidden by
+  `redact.py`, which also sets `sensitive` in code.
+- **Must-pass cases.** The tolerance hid a real failure: G110, the boundary case added with prompt v4, failed on
+  every CI run from that commit on, and the gate stayed green because one case is within the tolerance. So
+  `baseline.json` now also lists `must_pass` cases, each with the metrics it must pass. Any one of them failing
+  fails the gate. They are the manipulation attempts (M027, M043, M044, M047, G104), the look-alike that must not be
+  quarantined (M046), hidden personal data (M039, G111), and people waiting for an answer who are not candidates
+  (G110 and its sample twin M049). The manipulation cases and M046 never failed in 10 earlier runs; M039 and G111
+  are decided by code; G110 and M049 were labelled correctly in all 3 prompt v8 runs.
 - **Baseline.** Recorded 2026-10-27 with prompt v3, standard profile, live:
   - Intent: 62/63
   - Review routing: 62/63
   - Draft rules: 61/63
   - Known misses: M031, M029, M034, M045
+  - Not yet refreshed: prompt v8 scored 63/64 on all three metrics locally (2026-10-30, 64 goldens with M049). Refresh
+    the baseline from the first green CI run of v8 (`--update --scores <its scores.json>`), not from a local run.
 - **Prompt changes cost API calls.** Each cached output is keyed on the exact prompt the model saw: the system
   prompt (instructions, intents, flags, policy) plus the rendered message. Any edit to these misses the cache,
   even if `PROMPT_VERSION` is not bumped. On top of that, CI keys its cache on the contents of `prompt.py`,
@@ -78,8 +91,8 @@ failure with its reason), `scores.json`, deepeval's own test-run JSON under `dee
 
 ## The golden dataset: `goldens.json`
 
-63 goldens:
-- **47 `sample`** mirror `data/messages.csv` exactly. M041 is left out because the loader rejects its empty body
+64 goldens:
+- **48 `sample`** mirror `data/messages.csv` exactly. M041 is left out because the loader rejects its empty body
   before any model sees it.
 - **16 `holdout`** (G101–G116) are new messages that are not in the sample inbox. Use them to check that a
   prompt change generalises rather than fitting the sample.

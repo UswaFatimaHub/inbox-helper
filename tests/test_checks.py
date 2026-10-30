@@ -1,6 +1,6 @@
 import pytest
 
-from inbox_helper.checks import ParseError, check_draft, injection_spans, normalize, parse_batch_response
+from inbox_helper.checks import ParseError, automated_sender, check_draft, injection_spans, normalize, parse_batch_response
 
 POLICY = "Candidates may reschedule once with at least 24 hours' notice."
 
@@ -19,8 +19,24 @@ def test_parse_ignores_items_without_a_draft():
         parse_batch_response('{"results": [{"message_id": "A", "draft_reply": "  "}]}', ["A"])
 
 
-def test_parse_accepts_no_draft_when_no_reply_is_needed():
-    assert "A" in parse_batch_response('{"results": [{"message_id": "A", "intent": "no_reply_needed", "draft_reply": ""}]}', ["A"])
+def test_parse_needs_a_draft_even_when_the_model_says_no_reply_is_needed():
+    with pytest.raises(ParseError):  # no_reply_needed is decided by code from the sender, never by the model
+        parse_batch_response('{"results": [{"message_id": "A", "intent": "no_reply_needed", "draft_reply": ""}]}', ["A"])
+
+
+@pytest.mark.parametrize("email, automated", [
+    ("noreply-accounts@google.com", True),
+    ("no-reply@google.com", True),
+    ("No-Reply@Accounts.Google.com ", True),
+    ("workspace-noreply@google.com", True),
+    ("sundar@google.com", False),                  # a person at Google still gets a reply
+    ("noreply@notgoogle.com", False),              # look-alike domain
+    ("noreply@google.com.evil.example", False),
+    ("noreply@example.com", False),                # other no-reply senders go to the AI as usual
+    ("komal.riaz@example.com", False),
+])
+def test_automated_sender(email, automated):
+    assert automated_sender(email) is automated
 
 
 @pytest.mark.parametrize("text", ["not json", '{"results": "nope"}', "[]"])

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
-from .checks import ParseError, check_draft, detect_injection, normalize, parse_batch_response
+from .checks import ParseError, automated_sender, check_draft, detect_injection, normalize, parse_batch_response
 from .config import NO_REPLY_INTENT, PRIORITY_INTENTS, PROMPT_VERSION, QUARANTINE_KEEP_FLAGS, LaneConfig
 from .loader import Message
 from .prompt import build_system_prompt, build_user_prompt
@@ -166,6 +166,9 @@ class TriageRun:
             if m.candidate_email.strip().lower() in self.blocked_senders:
                 self._store(self._quarantined_result(m, "blocked_sender", "Sender is on the blocklist; not processed."))
                 continue
+            if automated_sender(m.candidate_email):
+                self._store(self._no_reply_result(m))
+                continue
             if detect_injection(f"{m.subject}\n{m.body}"):  # never send known injection text to the model
                 self._store(self._quarantined_result(
                     m, "manipulation_attempt", "Matches a known prompt-injection phrase; not sent to the AI."))
@@ -176,7 +179,8 @@ class TriageRun:
             else:
                 todo.append(m)
         if len(todo) < len(messages):
-            self.log(f"{len(messages) - len(todo)} message(s) handled without a model call (cache, blocklist, injection)")
+            self.log(f"{len(messages) - len(todo)} message(s) handled without a model call "
+                     "(cache, blocklist, automated sender, injection)")
         if todo:
             for i in range(0, len(todo), self.batch_size):
                 self._put(Job(todo[i:i + self.batch_size]))
@@ -296,9 +300,6 @@ class TriageRun:
             self._store(result)
             return
         flags = set(t.flags + t.code_flags + m.warnings)
-        if t.intent == NO_REPLY_INTENT:
-            t.draft_reply = ""  # a suggestion to close it; a reviewer who disagrees writes the reply
-            flags.discard("unsupported_request")
         # the model is told to write the body only; this enforces it. Its own greeting, if any, still tells the
         # language when it did not report one.
         language = language_of(t.language or greeting_language(t.draft_reply))
@@ -337,6 +338,14 @@ class TriageRun:
                       draft_reply="", lane=lane, model=model, prompt_version=PROMPT_VERSION, latency_s=latency,
                       error=None, processed_at=_now(),
                       review_status="blocked" if intent == "blocked_sender" else "pending")
+
+    def _no_reply_result(self, m: Message) -> Result:
+        """Automated mail from a no-reply sender: no AI call, no draft, no priority. A reviewer closes it."""
+        return Result(**self._input_fields(m), intent=NO_REPLY_INTENT, secondary_intent=None, confidence=1.0,
+                      flags=sorted(set(m.warnings)), priority_review=False,
+                      reason=f"Automated email from {m.candidate_email.strip().lower()}; not sent to the AI.",
+                      draft_reply="", lane="rules", model="none", prompt_version=PROMPT_VERSION, latency_s=None,
+                      error=None, processed_at=_now())
 
     def _model_copy(self, m: Message) -> Message:
         return self._for_model.get(m.message_id) or replace(m, subject=redact(m.subject).text, body=redact(m.body).text)

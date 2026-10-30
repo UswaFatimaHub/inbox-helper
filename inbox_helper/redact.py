@@ -1,8 +1,8 @@
 """Hide personal identifiers before any text is sent to an AI provider.
 
-The model never needs a national ID, bank, card, passport or phone number, or an email address, to classify a
-message or draft a reply. So they are replaced with tokens like [NATIONAL_ID] in the copy that goes to the model.
-The stored message keeps the original text: the reviewer sees everything, and only the AI does not.
+The model never needs a password, a national ID, bank, card, passport or phone number, or an email address, to
+classify a message or draft a reply. So they are replaced with tokens like [NATIONAL_ID] in the copy that goes to the
+model. The stored message keeps the original text: the reviewer sees everything, and only the AI does not.
 
 The patterns lean towards hiding too much, but stay clear of dates, times, years, money amounts and short reference
 numbers, which drafts legitimately need. Names are not removed: replies greet the person by name.
@@ -15,6 +15,9 @@ _R = r"(?![\w-])"
 
 # Applied in order: specific formats first, the generic long-number rule last.
 PATTERNS: list[tuple[str, re.Pattern]] = [
+    # a value right after "password is" / "password:" that contains a digit ("password is Brightpath123!"); the
+    # digit keeps "my password is wrong" readable. Passwords without a digit are missed. Group 1 is replaced.
+    ("PASSWORD", re.compile(r"(?i)\b(?:password|passcode|pwd)\s*(?:is|was|=|:|-)\s*[\"'“]?((?=\S*\d)[^\s\"'”]{4,})")),
     ("EMAIL", re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")),
     ("IBAN", re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b")),
     # Pakistani CNIC: 35202-1234567-1 (an unseparated 13-digit number is caught as NUMBER below)
@@ -32,6 +35,7 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
     ("NUMBER", re.compile(_L + r"(?:\d{9,}|\d{3,}(?:[ -]\d{3,})+)" + _R)),
 ]
 MIN_DIGITS = {"PHONE": 8, "NUMBER": 9}
+LABELLED = {"PASSPORT", "PASSWORD"}  # keep the label ("passport no.", "password is"), hide only group 1
 
 
 def _luhn_ok(digits: str) -> bool:
@@ -65,7 +69,7 @@ def find_identifiers(text: str) -> list[tuple[int, int, str]]:
                 continue
             if kind == "IBAN" and not re.search(r"\d{6}", value.replace(" ", "")):
                 continue
-            start, end = (m.start(1), m.end(1)) if kind == "PASSPORT" else (m.start(0), m.end(0))
+            start, end = (m.start(1), m.end(1)) if kind in LABELLED else (m.start(0), m.end(0))
             spans.append((start, end, kind))
         for start, end, _ in spans:
             masked = masked[:start] + "\0" * (end - start) + masked[end:]
@@ -85,7 +89,7 @@ def redact(text: str) -> Redaction:
             if kind == "IBAN" and not re.search(r"\d{6}", value.replace(" ", "")):
                 return value  # a run of capitalised words, not an account
             kinds.add(kind)
-            if kind == "PASSPORT":  # keep the label ("passport no."), hide the value
+            if kind in LABELLED:  # keep the label, hide the value
                 return value[:m.start(1) - m.start(0)] + f"[{kind}]" + value[m.end(1) - m.start(0):]
             return f"[{kind}]"
         text = pattern.sub(swap, text)

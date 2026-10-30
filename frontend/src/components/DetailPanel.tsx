@@ -37,7 +37,7 @@ const QUARANTINE_NOTE = "Manipulation attempt: closed without reply";
 
 const HIDDEN_LABELS: Record<string, string> = {
   EMAIL: "email address", IBAN: "IBAN", NATIONAL_ID: "national ID number", PASSPORT: "passport number",
-  CARD_NUMBER: "card number", PHONE: "phone number", NUMBER: "long number (account or ID)",
+  CARD_NUMBER: "card number", PHONE: "phone number", NUMBER: "long number (account or ID)", PASSWORD: "password",
 };
 
 /** The message text with injection phrases and hidden identifiers marked, each explained on hover. */
@@ -381,12 +381,12 @@ export function DetailPanel({ item, meta, reviewer, blockedEmails, onAction, onB
           <section className="card">
             <header className="flex items-center gap-2 border-b border-slate-100 px-5 py-3">
               <MailX className="size-4 text-slate-400" />
-              <h3 className="microlabel">AI suggests: no reply needed</h3>
+              <h3 className="microlabel">No reply needed: automated email</h3>
             </header>
             <div className="space-y-4 px-5 py-4 text-sm text-slate-600">
               <p>
-                The AI thinks nobody is waiting for an answer, so it drafted nothing. Check the message above: if a person
-                is asking something, write a reply instead.
+                This comes from a no-reply address, so it was not sent to the AI and has no draft. Check the message
+                above: if a person is asking something, write a reply instead.
               </p>
               <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:items-center">
                 {!writeAnyway && (

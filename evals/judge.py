@@ -30,11 +30,8 @@ JUDGE_PROFILES = {
         LaneConfig("judge-gemini-flash", "gemini", ("gemini-3.5-flash",), rpm=8, concurrency=1, timeout_s=90,
                    thinking="low"),
     ),
-    "openrouter": (
-        LaneConfig("judge-openrouter", "openrouter",
-                   ("nvidia/nemotron-3-ultra-550b-a55b:free", "nvidia/nemotron-3.5-super-vl:free"),
-                   rpm=15, concurrency=1, timeout_s=150),
-    ),
+    # Nemotron was the only OpenRouter judge; it was removed on 2026-10-30 and no other free model has been
+    # checked as a judge yet, so there is no OpenRouter judge profile.
 }
 
 JUDGE_SYSTEM = ("You are a careful, impartial evaluator of draft replies that a recruiting team may send to job "

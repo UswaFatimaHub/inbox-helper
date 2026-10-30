@@ -9,6 +9,10 @@ metric, the number of passing goldens may not drop more than `tolerance` below t
 deterministic, so the tolerance absorbs a case flipping between runs; a real regression shows up as several
 newly failing cases, which the report lists by id. A golden with no result counts as failed.
 
+The tolerance can also hide one important case failing on every run (G110 did, from prompt v4 to v6, and nobody read
+the report). So the baseline also lists `must_pass` cases (safety and boundary cases, each with the metrics it must
+pass), and any one of them failing fails the gate whatever the tolerance.
+
 Raising the baseline is part of the change that earns it: run with --update and commit evals/baseline.json, so the
 reviewer sees the new numbers next to the prompt diff.
 """
@@ -62,7 +66,15 @@ def compare(baseline: dict, current: dict[str, dict]) -> tuple[bool, list[str]]:
         mark = " ❌" if failed else ""
         lines.append(f"| {metric} | {base['passed']}/{base['total']} | {cur['passed']}/{cur['total']}{mark} | "
                      f"{', '.join(worse) or '-'} | {', '.join(better) or '-'} |")
-    verdict = ("**Eval gate passed**" if ok else "**Eval gate failed**: a metric dropped more than the tolerance")
+    dropped = not ok
+    must_pass = baseline.get("must_pass", {})
+    missed = [f"{case} ({metric})" for case, metrics in must_pass.items() for metric in metrics
+              if case in current.get(metric, {}).get("failing", [case])]
+    ok &= not missed
+    lines += ["", f"Must-pass cases ({len(must_pass)}): " + (f"**failed: {', '.join(missed)}**" if missed else "all passed")]
+    reasons = [r for r, bad in (("a metric dropped more than the tolerance", dropped),
+                                ("a must-pass case failed", bool(missed))) if bad]
+    verdict = "**Eval gate passed**" if ok else "**Eval gate failed**: " + "; ".join(reasons)
     return ok, [verdict + f" (tolerance: {tolerance} case(s) per metric)", ""] + lines
 
 
@@ -89,7 +101,7 @@ def main(argv=None) -> int:
             "about": "Eval gate baseline (python -m evals.gate). Update with --update and commit with the change.",
             "recorded": f"{datetime.now():%Y-%m-%d}", "source": run.get("source"),
             "prompt_version": run.get("prompt_version"), "profile": run.get("profile"),
-            "tolerance": old.get("tolerance", DEFAULT_TOLERANCE),
+            "tolerance": old.get("tolerance", DEFAULT_TOLERANCE), "must_pass": old.get("must_pass", {}),
             "metrics": {m: current[m] for m in names}}, indent=2) + "\n", encoding="utf-8")
         print(f"Baseline updated from {path}")
         return 0

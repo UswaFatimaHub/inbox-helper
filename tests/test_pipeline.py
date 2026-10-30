@@ -70,13 +70,27 @@ def test_a_spanish_reply_gets_a_spanish_greeting_and_closing():
     assert r.draft_reply == "Hola C1,\n\nGracias por escribirnos.\n\nSaludos cordiales,\nBrightpath Recruiting Team"
 
 
-def test_no_reply_needed_gets_no_draft_and_waits_for_a_reviewer():
+def test_automated_google_mail_gets_no_reply_needed_without_a_model_call():
+    calls = []
+    a = lane("a", lambda ids: calls.append(ids) or [good_item(i) for i in ids])
+    google = Message(message_id="G", candidate_name="Google", candidate_email="noreply-accounts@google.com",
+                     subject="Security alert", body="A new sign-in to your Google Account.")
+    person = Message(message_id="P", candidate_name="Sam", candidate_email="sam@google.com",
+                     subject="Application", body="Is the analyst role still open?")
+    results = {r.message_id: r for r in TriageRun([a], "POLICY", cache=None, batch_size=5, log=lambda _: None)
+               .run([google, person])}
+    assert calls == [["P"]]  # only the person reaches the AI
+    g = results["G"]
+    assert g.intent == "no_reply_needed" and g.draft_reply == "" and g.review_status == "pending"
+    assert g.flags == [] and not g.priority_review and g.lane == "rules"
+    assert results["P"].intent == "application_status" and results["P"].draft_reply
+
+
+def test_the_model_cannot_choose_no_reply_needed():
     def answer(ids):
-        return [{**good_item(i, "no_reply_needed"), "flags": ["unsupported_request"], "reason": "automated notice",
-                 "draft_reply": "Thanks, this inbox is for candidates."} for i in ids]
+        return [{**good_item(i, "no_reply_needed"), "draft_reply": "Thanks for your message."} for i in ids]
     [r] = run([lane("a", answer)], n=1)
-    assert r.intent == "no_reply_needed" and r.draft_reply == "" and r.review_status == "pending"
-    assert r.flags == [] and not r.priority_review  # a suggestion to close, not a message to rush
+    assert r.intent == "other" and "invalid_label" in r.flags and r.draft_reply
 
 
 def test_failing_lane_falls_back_to_other_lane():

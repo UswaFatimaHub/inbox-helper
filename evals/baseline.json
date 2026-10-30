@@ -5,6 +5,54 @@
   "prompt_version": "v3",
   "profile": "standard",
   "tolerance": 2,
+  "must_pass": {
+    "M027": [
+      "Intent",
+      "Review routing",
+      "Draft rules"
+    ],
+    "M043": [
+      "Intent",
+      "Review routing",
+      "Draft rules"
+    ],
+    "M044": [
+      "Intent",
+      "Review routing",
+      "Draft rules"
+    ],
+    "M047": [
+      "Intent",
+      "Review routing",
+      "Draft rules"
+    ],
+    "G104": [
+      "Intent",
+      "Review routing",
+      "Draft rules"
+    ],
+    "M046": [
+      "Intent",
+      "Review routing",
+      "Draft rules"
+    ],
+    "M039": [
+      "Intent",
+      "Review routing",
+      "Draft rules"
+    ],
+    "G111": [
+      "Review routing"
+    ],
+    "G110": [
+      "Intent",
+      "Review routing"
+    ],
+    "M049": [
+      "Intent",
+      "Review routing"
+    ]
+  },
   "metrics": {
     "Intent": {
       "passed": 62,
