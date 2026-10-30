@@ -71,13 +71,13 @@ evals\.venv\Scripts\python -m evals.gate --update                  # accept it a
   quarantined (M046), hidden personal data (M039, G111), and people waiting for an answer who are not candidates
   (G110 and its sample twin M049). The manipulation cases and M046 never failed in 10 earlier runs; M039 and G111
   are decided by code; G110 and M049 were labelled correctly in all 3 prompt v8 runs.
-- **Baseline.** Recorded 2026-10-27 with prompt v3, standard profile, live:
-  - Intent: 62/63
-  - Review routing: 62/63
-  - Draft rules: 61/63
-  - Known misses: M031, M029, M034, M045
-  - Not yet refreshed: prompt v8 scored 63/64 on all three metrics locally (2026-10-30, 64 goldens with M049). Refresh
-    the baseline from the first green CI run of v8 (`--update --scores <its scores.json>`), not from a local run.
+- **Baseline.** Recorded 2026-10-30 from the first green CI run of prompt v8
+  ([41094038734](https://github.com/UswaFatimaHub/inbox-helper/actions/runs/41094038734)), standard profile:
+  - Intent: 63/64 (miss: M031)
+  - Review routing: 63/64 (miss: M034, `unsupported_request` not flagged)
+  - Draft rules: 61/64 (misses: M021 and M029 claimed an action; M049's one-line reply came out at 38 words)
+  - Previous baseline (2026-10-27, prompt v3, 63 goldens, recorded locally): 62/63, 62/63, 61/63.
+  - From now on, refresh the baseline from a CI run (`--update --scores <its scores.json>`), not from a local run.
 - **Prompt changes cost API calls.** Each cached output is keyed on the exact prompt the model saw: the system
   prompt (instructions, intents, flags, policy) plus the rendered message. Any edit to these misses the cache,
   even if `PROMPT_VERSION` is not bumped. On top of that, CI keys its cache on the contents of `prompt.py`,
