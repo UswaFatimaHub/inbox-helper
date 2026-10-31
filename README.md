@@ -1,5 +1,7 @@
 # Inbox Helper
 
+**Live demo:** https://email-inbox-helper.onrender.com
+
 Takes a pile of candidate messages, groups them by what the person wants, and drafts a short reply for each.
 **Nothing is sent.** A person approves, edits or rejects every draft, and every action is recorded in an audit
 trail. Approved replies can be copied, exported, or saved as Gmail drafts that a person sends from Gmail.
@@ -398,6 +400,10 @@ On that run:
 
 ## Known limitations
 
+- It is a shared team inbox. No user accounts are stored: everyone on `ALLOWED_EMAILS` sees the same queue, the
+  same Gmail mailbox and the same blocklist. Data is not separated per user; only the reply signature is per
+  reviewer, and the audit trail records who did what. So keep `ALLOWED_EMAILS` to people who may see every message,
+  and never add a public domain such as `@gmail.com`.
 - There is one role: every allowed reviewer can do everything, including unblocking senders. There are no
   admin or read-only accounts.
 - The model-output cache is a JSON file per worker (`.cache/`). It is lost when a container is replaced. That
